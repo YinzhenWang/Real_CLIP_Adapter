@@ -1,37 +1,55 @@
 from PIL import Image
 import requests
-from transformers import AutoProcessor, CLIPModel,CLIPTextModel,CLIPVisionModel
-from transformers.adapters import AdapterConfig,MAMConfig,UniPELTConfig
-vconfig = AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu")
-config = UniPELTConfig()
-print(config.to_dict())
-#config = AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu")
+from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, AutoTokenizer
+from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig
+from torchvision.datasets import Caltech101, CIFAR10, CIFAR100
+import os
+from tqdm import tqdm
+import torch
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+dataset = CIFAR100(root=os.path.expanduser("~/.cache"), download=True, train=False)
+config = MAMConfig()
+# config = AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu")
+device = "cuda:6"
+
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", output_hidden_states=True, return_dict=True)
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 model.vision_model = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
 model.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
-
-
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
-print(model.vision_model)
-inputs = processor(
-    text=["a photo of a cat", "a photo of a dog","a photo of wjm"], images=image, return_tensors="pt", padding=True
-)
-model.text_model.add_adapter("mam_adapter", config=config)
+model.text_model.load_adapter("./LM/toyadapter")
+'''
 model.text_model.train_adapter("mam_adapter")
+'''
 model.text_model.set_active_adapters("mam_adapter")
 
-model.vision_model.add_adapter("wjm", config=config)
-model.vision_model.train_adapter("wjm")
-model.vision_model.set_active_adapters("wjm")
 
-print(model.vision_model)
-outputs = model(**inputs)
-logits_per_image = outputs.logits_per_image  # this is the image-text similarity score
-probs = logits_per_image.softmax(dim=1)  # we can take the softmax to get the label probabilities
+model.to(device)
+total = 0
+top1_cnt = 0
+top3_cnt = 0
+top10_cnt = 0
+with tqdm(dataset, desc='train') as loop:
+    for image, class_id in loop:
 
-print(probs)
+        inputs = processor(
+            text=[f"a photo of a {c}" for c in dataset.classes],
+            images=image, return_tensors="pt", padding=True
+        ).to(device)
+
+        # Calculate features
+        with torch.no_grad():
+            outputs = model(**inputs)
+
+        # Pick the top 5 most similar labels for the image
+
+        if outputs.logits_per_image[0].topk(1)[1] == class_id:
+            top1_cnt += 1
+        if class_id in outputs.logits_per_image[0].topk(3).indices.data:
+            top3_cnt += 1
+        if class_id in outputs.logits_per_image[0].topk(10).indices.data:
+            top10_cnt += 1
+        total += 1
+        loop.set_postfix(acc1=top1_cnt / total, acc3=top3_cnt / total, acc10=top10_cnt / total)
