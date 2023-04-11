@@ -9,7 +9,7 @@ import torch
 from Visionmodel import CLIPVisionClassification
 import torchvision
 
-device = "cuda:5"
+device = "cuda:6"
 
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
@@ -18,8 +18,9 @@ trainset = CIFAR100(root=os.path.expanduser("~/.cache"), train=True, download=Tr
 '''
 mytrainset = CLIPVisionDataset(trainset,processor)
 trainloader = torch.utils.data.DataLoader(mytrainset, batch_size=128,shuffle=True)
-
+'''
 testset = CIFAR100(root=os.path.expanduser("~/.cache"), train=False,download=True)
+'''
 mytest = CLIPVisionDataset(testset,processor)
 testloader = torch.utils.data.DataLoader(mytest, batch_size=128,shuffle=False)
 '''
@@ -64,6 +65,29 @@ for _ in range(10):
                 if loss != 0:
                     loss.backward()
                 optimizer.step()
+                bz = 0
+                tmp_img = []
+                tmp_label = []
+                loop.set_postfix(loss=loss, acc=cnt / total)
+    total = 0
+    cnt = 0
+    bz = 0
+    tmp_img = []
+    tmp_label = []
+    with tqdm(testset, desc='test {}'.format(_)) as loop:
+        for image, class_id in loop:
+            bz += 1
+            if bz <= batch_size:
+                tmp_img.append(image)
+                tmp_label.append(class_id)
+            if bz > batch_size:
+                inputs = processor(images=tmp_img, return_tensors="pt", padding=True).to(device)
+                outputs = model(inputs)
+                label = torch.tensor(tmp_label).to(device)
+
+                total += len(label)
+                cnt += (torch.argmax(outputs, dim=1) == label).int().sum().item()
+
                 bz = 0
                 tmp_img = []
                 tmp_label = []
