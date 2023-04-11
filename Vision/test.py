@@ -19,11 +19,11 @@ model.vision_model = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch
 model.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
 tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
-model.text_model.load_adapter("./LM/adapter")
 '''
+model.text_model.load_adapter("./LM/toyadapter")
 model.text_model.train_adapter("mam_adapter")
+model.text_model.set_active_adapters("mam_adapter")
 '''
-model.text_model.set_active_adapters("adapter")
 
 
 model.to(device)
@@ -42,14 +42,5 @@ with tqdm(dataset, desc='train') as loop:
         # Calculate features
         with torch.no_grad():
             outputs = model(**inputs)
-
-        # Pick the top 5 most similar labels for the image
-
-        if outputs.logits_per_image[0].topk(1)[1] == class_id:
-            top1_cnt += 1
-        if class_id in outputs.logits_per_image[0].topk(3).indices.data:
-            top3_cnt += 1
-        if class_id in outputs.logits_per_image[0].topk(10).indices.data:
-            top10_cnt += 1
-        total += 1
-        loop.set_postfix(acc1=top1_cnt / total, acc3=top3_cnt / total, acc10=top10_cnt / total)
+            print(outputs.vision_model_output.pooler_output.shape)
+            break
