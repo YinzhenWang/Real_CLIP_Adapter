@@ -100,8 +100,8 @@ for epoch in range(num_epochs):
         train_loss_epoch += loss.item() * train_x.size(0)
         train_corrects += torch.sum(pre_lab == train_y.data)
         if batch_idx % 200 == 0:
-            print(f'Epoch: {epoch+1}/{20}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item()}')
-            print(train_loss_epoch, train_corrects, len(train_sampler))
+            print(f'Epoch: {epoch+1}/{num_epochs}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item()}')
+            # print(train_loss_epoch, train_corrects, len(train_sampler))
     # calculate loss and accuracy for one epoch
     train_loss = train_loss_epoch / len(train_sampler)
     train_acc = train_corrects.double() / len(train_sampler)
