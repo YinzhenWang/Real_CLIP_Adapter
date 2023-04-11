@@ -31,10 +31,11 @@ optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters(
 
 print("\nAll Classes:", trainset.classes)
 batch_size = 16
+train_epoch = 5
 
 
-def finetune(trainset, testset, model):
-    for _ in range(10):
+def finetune(trainset, testset, model, train_epoch):
+    for _ in range(train_epoch):
         total = 0
         cnt = 0
         bz = 0
@@ -85,10 +86,10 @@ def finetune(trainset, testset, model):
                     bz = 0
                     tmp_img = []
                     tmp_label = []
-                    loop.set_postfix(loss=loss.item(), acc=cnt / total)
+                    loop.set_postfix(acc=cnt / total)
 
-    model.cliptext.save_adapter("./adapter", "adapter")
+    model.clipvision.save_adapter("./Visionadapter", "Visionadapter")
 
 
 if __name__ == '__main__':
-    finetune(trainset, testset, model)
+    finetune(trainset, testset, model, train_epoch)
