@@ -10,7 +10,7 @@ from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig
 from datasets import load_dataset
 from LMmodel import CLIPClassification
 
-tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch16")
 device = "cuda:5"
 
 train_dataset = load_dataset("glue", "sst2", split="train")

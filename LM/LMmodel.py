@@ -7,7 +7,7 @@ class CLIPClassification(nn.Module):
 
     def __init__(self, input_size,dropout):
         super().__init__()
-        self.cliptext = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+        self.cliptext = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch16")
         self.classifer = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(input_size, input_size),

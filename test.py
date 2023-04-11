@@ -12,12 +12,12 @@ config = MAMConfig()
 # config = AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu")
 device = "cuda:5"
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", output_hidden_states=True, return_dict=True)
-processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16", output_hidden_states=True, return_dict=True)
+processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
-model.vision_model = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
-model.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
-tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+model.vision_model = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+model.text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch16")
+tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch16")
 
 model.text_model.load_adapter("./LM/adapter")
 '''
