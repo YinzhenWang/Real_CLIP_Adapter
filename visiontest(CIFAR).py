@@ -28,18 +28,22 @@ train_dataset = datasets.CIFAR100(root='./data', train=True, download=True, tran
 
 # Training and Validation Set
 num_train = len(train_dataset)
-indices = list(range(num_train))
-split = int(num_train * 0.8)  # 80% for training，20% for testing
-train_idx, val_idx = indices[:split], indices[split:]
-train_sampler = torch.utils.data.sampler.SubsetRandomSampler(train_idx)
-val_sampler = torch.utils.data.sampler.SubsetRandomSampler(val_idx) # split train and validation data
+# indices = list(range(num_train))
+# split = int(num_train * 0.8)  # 80% for training，20% for testing
+# train_idx, val_idx = indices[:split], indices[split:]
+# train_sampler = torch.utils.data.sampler.SubsetRandomSampler(train_idx)
+# val_sampler = torch.utils.data.sampler.SubsetRandomSampler(val_idx) # split train and validation data
+# Split dataset into train and validation set
+train_size = int(num_train * 0.8)
+val_size = num_train - train_size
+train_data, val_data = torch.utils.data.random_split(train_dataset, [train_size, val_size])
 
 
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, sampler=train_sampler, num_workers=4)
-val_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, sampler=val_sampler, num_workers=4)
+train_loader = torch.utils.data.DataLoader(train_data, batch_size=32, shuffle=True, num_workers=4)
+val_loader = torch.utils.data.DataLoader(val_data, batch_size=32, shuffle=True, num_workers=4)
 
 print('Train on CIFAR 100.')
-print('train data:', len(train_sampler), ', validation data:', len(val_sampler))
+print('train data:', len(train_data), ', validation data:', len(val_data))
 print('train data batch:', len(train_loader), ', validation data batch:', len(val_loader))
 
 # add ViT
@@ -103,8 +107,8 @@ for epoch in range(num_epochs):
             print(f'Epoch: {epoch+1}/{num_epochs}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item()}')
             # print(train_loss_epoch, train_corrects, len(train_sampler))
     # calculate loss and accuracy for one epoch
-    train_loss = train_loss_epoch / len(train_sampler)
-    train_acc = train_corrects.double() / len(train_sampler)
+    train_loss = train_loss_epoch / len(train_data)
+    train_acc = train_corrects.double() / len(train_data)
     print(f'Epoch: {epoch+1}/{num_epochs}, Train Loss: {train_loss}, Train Acc: {train_acc:.2%}')
 
     # validate
@@ -125,8 +129,8 @@ for epoch in range(num_epochs):
             val_loss_epoch += loss.item() * val_x.size(0)
             val_corrects += torch.sum(pre_lab == val_y.data)
     # calculate loss and accuracy for one epoch
-    val_loss = val_loss_epoch / len(val_sampler)
-    val_acc = val_corrects.double() / len(val_sampler)
+    val_loss = val_loss_epoch / len(val_data)
+    val_acc = val_corrects.double() / len(val_data)
     print(f'Epoch: {epoch+1}/{num_epochs}, Val Loss: {val_loss}, Val Acc: {val_acc:.2%}')
 
 
@@ -137,8 +141,8 @@ transform_test = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-test_dataset = datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2)
+test_data = datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=32, shuffle=False, num_workers=2)
 
 test_loss_epoch = 0.0
 test_corrects = 0
@@ -161,6 +165,6 @@ with torch.no_grad():
         test_loss_epoch += loss.item() * test_x.size(0)
         test_corrects += torch.sum(pre_lab == test_y.data)
     # calculate loss and accuracy for whole test set
-    test_loss = test_loss_epoch / len(test_loader.dataset)
-    test_acc = test_corrects.double() / len(test_loader.dataset)
+    test_loss = test_loss_epoch / len(test_data)
+    test_acc = test_corrects.double() / len(test_data)
     print(f'Test Loss: {test_loss}, Test Acc: {test_acc:.2%}')
