@@ -2,6 +2,10 @@ import numpy as np
 
 
 class MaskGenerator:
+    """
+    Generate random mask patches on input images.
+    Borrow this code from https://github.com/microsoft/SimMIM/blob/d3e29bcac950b83edc34ca33fe4404f38309052c/data/data_simmim.py#L21
+    """
     def __init__(self, input_size=224, mask_patch_size=32, model_patch_size=4, mask_ratio=0.6):
         self.input_size = input_size
         self.mask_patch_size = mask_patch_size
