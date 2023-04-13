@@ -89,6 +89,8 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
 
         logger.info('train_epoch{}_adapter_{}, loss:{.4f}'.format(epoch, configname, loss_meter.avg))
 
+    vision_encoder.clipvision.save_adapter(f"./{configname}_mim", f"{configname}")
+
 
 if __name__ == "__main__":
     logger = create_logger("masked_modeling_log.txt", add_stream=False)
