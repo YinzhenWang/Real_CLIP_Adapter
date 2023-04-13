@@ -3,26 +3,24 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-from torchvision.datasets import CIFAR100, ImageNet
 
-from transformers import AutoProcessor
+from transformers import CLIPImageProcessor
 from transformers.adapters import LoRAConfig
 
+from Vision.data_imagenet_mini import get_imagenet_mini
 from Vision.mask_generator import MaskGenerator
 from Visionmodel import MIM, CLIPVisionMasked
 from utils import create_logger
-
-from PIL import Image
 
 
 def masked_modeling(configname, config, epochs, check_grad=False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch16")
-
-    # trainset = CIFAR100(root=os.path.expanduser("~/.cache"), train=True, download=True)
-    # testset = CIFAR100(root=os.path.expanduser("~/.cache"), train=False, download=True)
-    # trainset = ImageNet(root="dataset/data/imagenet", split="train")
+    model_patch_size = 16
+    data_path = '../dataset/data/imagenet'
+    transform = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch16")
+    mask_generator = MaskGenerator(input_size=224, model_patch_size=model_patch_size)
+    trainset = get_imagenet_mini(data_path, 'train', transform, mask_generator, 16, 8, max_len=10000)
 
     vision_encoder = CLIPVisionMasked(dropout_rate=0.2)
     model = MIM(vision_encoder, 16)
@@ -48,49 +46,33 @@ def masked_modeling(configname, config, epochs, check_grad=False):
 
     logger.info("Start training")
 
-    batch_size = 2
-    model_patch_size = 16
-    mask_generator = MaskGenerator(input_size=224, model_patch_size=model_patch_size)
-    test_mask = mask_generator()
-
     for _ in range(epochs):
-        bz = 0
-        tmp_img = []
-        tmp_mask = []
+        total = 0
+        total_loss = 0
+
         optimizer.zero_grad()
         model.train()
-        # with tqdm(trainset, desc='train_epoch{}_adapter_{}'.format(_, configname)) as loop:
-        #     for image, class_id in loop:
-        image = Image.open('../dataset/data/imagenet/train/n01443537/n01443537_130.JPEG')
-        image = np.array(image)
-        if True:
-                # if bz <= batch_size:
-                #     bz += 1
-                    tmp_img.append(image)
-                    random_mask = mask_generator()
-                    tmp_mask.append(random_mask)
-                # if bz > batch_size:
-                    inputs = processor(images=tmp_img, return_tensors="pt", padding=True).to(device)
-                    mask = torch.tensor(tmp_mask).to(device)
-                    x = inputs['pixel_values']
-                    x_rec = model(x, mask)
+        with tqdm(trainset, desc='train_epoch{}_adapter_{}'.format(_, configname)) as loop:
+            for img, mask in loop:
+                img = img.to(device)
+                mask = mask.to(device)
+                img_rec = model(img, mask)
 
-                    mask = mask.repeat_interleave(model_patch_size, 1).repeat_interleave(model_patch_size, 2).unsqueeze(
-                        1).contiguous()
+                mask = mask.repeat_interleave(model_patch_size, 1).repeat_interleave(model_patch_size, 2).unsqueeze(1).contiguous()
 
-                    loss_recon = F.l1_loss(x, x_rec, reduction='none')
-                    loss = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
+                loss_recon = F.l1_loss(img, img_rec, reduction='none')
+                loss = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
 
-                    if loss != 0:
-                        loss.backward()
-                    optimizer.step()
+                if loss != 0:
+                    loss.backward()
+                optimizer.step()
 
-                    bz = 0
-                    tmp_img = []
-                    tmp_mask = []
+                batch_size = img.size(0)
+                total += batch_size
+                total_loss += loss.item() * batch_size
 
-                    loop.set_postfix(loss=loss.item())
-        # logger.info('train_epoch{}_adapter_{}, loss:{}'.format(_, configname, loss))
+                loop.set_postfix(loss=total_loss / total)
+        logger.info('train_epoch{}_adapter_{}, loss:{}'.format(_, configname, total_loss / total))
 
 
 if __name__ == "__main__":
