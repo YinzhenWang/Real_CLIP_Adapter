@@ -54,11 +54,11 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
 
     # Wrap model in DataParallel for multi-GPU training
     if torch.cuda.device_count() > 1:
-        logger.info('Start Multi-GPU training:')
+        logger.info('Multi-GPU training.')
         print('Start multi-GPU training.')
         model = DataParallel(model)
     else:
-        logger.info('Start single GPU training:')
+        logger.info('Single GPU training.')
         print('Start single GPU training.')
 
     # Optimizer
@@ -86,7 +86,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
 
     logger.info("Start training")
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs + 1):
         loss_meter = AverageMeter()
 
         # Train model
@@ -115,7 +115,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         
 
         # Validate model
-        if epoch % 5 == 0 or epoch == epochs - 1:
+        if epoch % 5 == 0:
             val_loss_meter = AverageMeter()
             model.eval()
             with torch.no_grad():
@@ -135,7 +135,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
 
         
         # Save checkpoint
-        if epoch % 10 == 0 or epoch == epochs - 1:
+        if epoch % 10 == 0:
             # Unwrap model from DataParallel
             if isinstance(model, DataParallel):
                 saved_model = model.module
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     train_epochs = 50
     warmup_epochs = 5
     data_path = '../dataset/data/imagenet'
-    mask_patch_size = 16
+    mask_patch_size = 32
     model_patch_size = 16
     mask_ratio = 0.6
     batch_size = 256
