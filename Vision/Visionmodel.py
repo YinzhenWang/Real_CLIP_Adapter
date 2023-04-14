@@ -96,6 +96,7 @@ class MIM(nn.Module):
                 out_channels=self.encoder_stride ** 2 * 3, kernel_size=1),
             nn.PixelShuffle(self.encoder_stride),
         )
+        
 
     def forward(self, x, mask):
         z = self.encoder(x, mask)
