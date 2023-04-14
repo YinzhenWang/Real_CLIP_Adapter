@@ -1,5 +1,5 @@
 import sys
-sys.path.append('../')
+sys.path.append('../') # could be comment out
 
 import numpy as np
 import time
@@ -29,6 +29,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
     transform = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch16")
     mask_generator = MaskGenerator(input_size=224, mask_patch_size=mask_patch_size,
                                    model_patch_size=model_patch_size, mask_ratio=mask_ratio)
+    
     # Train set: 34745; Val set: 3923
     print("Loading dataset...")
     trainset = get_imagenet_mini(data_path, 'train', transform, mask_generator, 
@@ -36,6 +37,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
     valset = get_imagenet_mini(data_path, 'val', transform, mask_generator, 
                                  batch_size=batch_size, num_workers=32, max_len=4000)
 
+    # Define model
     vision_encoder = CLIPVisionMasked(dropout_rate=0.1)
     model = MIM(vision_encoder, 16)
 
