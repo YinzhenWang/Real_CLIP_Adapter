@@ -65,7 +65,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), 
                                   lr=5e-4, weight_decay=0.05, betas=(0.9, 0.999))
 
-    # Calculate parameters
+    # Calculate parameter
     n_params = sum(p.numel() for p in model.parameters())
     n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total params: {n_params}, trained params: {n_train_params}")
