@@ -51,7 +51,7 @@ class CLIPTextOnly(nn.Module):
         text_embeds0 = self.text_projection(text_embeds0)
         text_embeds0 = text_embeds0 / text_embeds0.norm(p=2, dim=-1, keepdim=True)
 
-        text_embeds1 = text_outputs0[1]
+        text_embeds1 = text_outputs1[1]
         text_embeds1 = self.text_projection(text_embeds1)
         text_embeds1 = text_embeds1 / text_embeds1.norm(p=2, dim=-1, keepdim=True)
 

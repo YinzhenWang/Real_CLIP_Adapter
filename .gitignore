@@ -1,0 +1,5 @@
+data/
+*.zip
+flickr30k-images.tar.gz
+.idea
+.DS_Store
