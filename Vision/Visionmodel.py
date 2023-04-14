@@ -79,7 +79,18 @@ class MIM(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.encoder_stride = encoder_stride
+        # self.decoder = nn.Sequential(
+        #     nn.Conv2d(
+        #         in_channels=self.encoder.embed_dim,
+        #         out_channels=self.encoder_stride ** 2 * 3, kernel_size=1),
+        #     nn.PixelShuffle(self.encoder_stride),
+        # )
         self.decoder = nn.Sequential(
+            nn.Conv2d(
+                in_channels=self.encoder.embed_dim,
+                out_channels=self.encoder.embed_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.encoder.embed_dim),
+            nn.ReLU(inplace=True),
             nn.Conv2d(
                 in_channels=self.encoder.embed_dim,
                 out_channels=self.encoder_stride ** 2 * 3, kernel_size=1),
