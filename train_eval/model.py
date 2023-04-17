@@ -110,8 +110,11 @@ class CLIPALL(nn.Module):
     def __init__(self,backbone):
         super().__init__()
         self.backbone = backbone
-        self.cliptext = CLIPTextModelWithProjection.from_pretrained(self.backbone)
-        self.clipvision = CLIPVisionModelWithProjection.from_pretrained(self.backbone)
+        self.clip = CLIPModel.from_pretrained(self.backbone)
+        self.cliptext = self.clip.text_model
+        self.clipvision = self.clip.vision_model
+        self.text_projection = self.clip.text_projection
+        self.visual_projection = self.clip.visual_projection
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
@@ -123,24 +126,34 @@ class CLIPALL(nn.Module):
         text_input['input_ids'] = input_ids
         text_input['attention_mask'] = attention_mask
         text_outputs = self.cliptext(**text_input)
-        language_cls = text_outputs.text_embeds
+        language_cls = self.text_projection(text_outputs[1])
+        text_embeds = language_cls
 
         vision_input = {}
         vision_input['pixel_values'] = pixel_values
         vision_outputs = self.clipvision(**vision_input)
-        vision_cls = vision_outputs.image_embeds
-
-
-
-        loss, logits_per_image, logits_per_text = self.criterion(
-                vision_cls, language_cls, self.logit_scale.exp())
+        vision_cls = self.visual_projection(vision_outputs[1])
+        image_embeds = vision_cls
+        # normalized features
+        image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+        text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+        #print(image_embeds)
+        loss, logits_per_image, logits_per_text = self.criterion(vision_cls, language_cls, self.logit_scale.exp())
         
         output = CLIPOutput(
             loss=loss,
-            text_embeds=vision_cls,
-            image_embeds=language_cls
+            text_embeds=text_embeds,
+            image_embeds=image_embeds
         )
         return output
+
+
+
+
+
+
+
+
 
 
 
