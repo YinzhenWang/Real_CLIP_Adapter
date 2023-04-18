@@ -1,55 +1,17 @@
 ### the following code is a modification of https://github.com/microsoft/unilm/blob/master/beit3/ for personal use
 
-import math
-import os
-import sys
-import json
-from typing import Iterable, Optional
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torchvision.datasets.folder import default_loader
-from torchvision import transforms
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
-from transformers import CLIPModel, XLMRobertaTokenizer, CLIPTokenizerFast,CLIPImageProcessor
-
-
-
-
-from timm.utils import ModelEma
-from timm.utils import accuracy, ModelEma
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
-
-
-from PIL import Image
-from transformers import CLIPProcessor, AutoTokenizer
-
-
-
 import datetime
-import io
-import os
-import math
-import time
 import json
-import argparse
-import numpy as np
-from pathlib import Path
+import os
+import time
 from collections import defaultdict, deque
-from timm.utils import get_state_dict
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
-import torch.nn.functional as F
-from torch._six import inf
-from torchmetrics import Metric
-from tensorboardX import SummaryWriter
-
-
-
+from timm.data.constants import IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
+from torchvision import transforms
+from torchvision.datasets.folder import default_loader
+from transformers import CLIPModel, CLIPTokenizerFast, CLIPImageProcessor
 
 
 def is_dist_avail_and_initialized():
@@ -58,6 +20,7 @@ def is_dist_avail_and_initialized():
     if not dist.is_initialized():
         return False
     return True
+
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -119,6 +82,7 @@ class SmoothedValue(object):
             global_avg=self.global_avg,
             max=self.max,
             value=self.value)
+
 
 class MetricLogger(object):
     def __init__(self, delimiter="\t"):
@@ -204,6 +168,7 @@ class MetricLogger(object):
         print('{} Total time: {} ({:.4f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
 
+
 class TaskHandler(object):
     def __init__(self) -> None:
         self.metric_logger = None
@@ -214,8 +179,6 @@ class TaskHandler(object):
 
     def eval_batch(self, model, **kwargs):
         raise NotImplementedError()
-
-
 
     def after_eval(self, **kwargs):
         raise NotImplementedError()
@@ -233,7 +196,7 @@ class RetrievalHandler(TaskHandler):
         loss, vision_cls, language_cls = model(
             image=image, text_description=language_tokens, padding_mask=padding_mask)
         return {
-            "loss": loss, 
+            "loss": loss,
         }
 
     def before_eval(self, metric_logger, **kwargs):
@@ -244,101 +207,92 @@ class RetrievalHandler(TaskHandler):
 
     def eval_batch(self, model, pixel_values, input_ids, attention_mask, image_id):
 
-
         inputs = {}
 
-        inputs["pixel_values"] =  torch.squeeze(pixel_values)
+        inputs["pixel_values"] = torch.squeeze(pixel_values)
         inputs["input_ids"] = input_ids
-        inputs["attention_mask"] =(1-attention_mask)
+        inputs["attention_mask"] = (1 - attention_mask)
 
-
-        #print(inputs)    
+        # print(inputs)
         outputs = model(**inputs)
 
-        vision_cls = outputs.image_embeds 
-        language_cls = outputs.text_embeds 
-
+        vision_cls = outputs.image_embeds
+        language_cls = outputs.text_embeds
 
         self.image_feats.append(vision_cls.clone())
         self.text_feats.append(language_cls.clone())
         self.image_ids.append(image_id.clone())
 
     def after_eval(self, **kwargs):
-      # print(self.image_feats.length)
-      # print(self.text_feats.length)
-      # print(self.image_ids.length)
-      
-      image_feats = {}
-      for feats, ids in zip(self.image_feats, self.image_ids):
-          for i, _idx in enumerate(ids):
-              idx = _idx.item()
-              if idx not in image_feats:
-                  image_feats[idx] = feats[i]
-      
-      tiids = torch.cat(self.image_ids, dim=0)
-      iids = []
-      sorted_tensors = []
-      for key in sorted(image_feats.keys()):
-          sorted_tensors.append(image_feats[key].view(1, -1))
-          iids.append(key)
+        # print(self.image_feats.length)
+        # print(self.text_feats.length)
+        # print(self.image_ids.length)
 
-      image_cls_feats = torch.cat(sorted_tensors, dim=0)
-      text_cls_feats = torch.cat(self.text_feats, dim=0)
+        image_feats = {}
+        for feats, ids in zip(self.image_feats, self.image_ids):
+            for i, _idx in enumerate(ids):
+                idx = _idx.item()
+                if idx not in image_feats:
+                    image_feats[idx] = feats[i]
 
-      
-      scores = image_cls_feats @ text_cls_feats.t()
-      iids = torch.LongTensor(iids).to(scores.device)
+        tiids = torch.cat(self.image_ids, dim=0)
+        iids = []
+        sorted_tensors = []
+        for key in sorted(image_feats.keys()):
+            sorted_tensors.append(image_feats[key].view(1, -1))
+            iids.append(key)
 
-      print("scores: {}".format(scores.size()))
-      print("iids: {}".format(iids.size()))
-      print("tiids: {}".format(tiids.size()))
+        image_cls_feats = torch.cat(sorted_tensors, dim=0)
+        text_cls_feats = torch.cat(self.text_feats, dim=0)
 
-      topk10 = scores.topk(10, dim=1)
-      topk5 = scores.topk(5, dim=1)
-      topk1 = scores.topk(1, dim=1)
-      
-      topk10_iids = tiids[topk10.indices]
-      topk5_iids = tiids[topk5.indices]
-      topk1_iids = tiids[topk1.indices]
+        scores = image_cls_feats @ text_cls_feats.t()
+        iids = torch.LongTensor(iids).to(scores.device)
 
-      tr_r10 = (iids.unsqueeze(1) == topk10_iids).float().max(dim=1)[0].mean()
-      tr_r5 = (iids.unsqueeze(1) == topk5_iids).float().max(dim=1)[0].mean()
-      tr_r1 = (iids.unsqueeze(1) == topk1_iids).float().max(dim=1)[0].mean()
+        print("scores: {}".format(scores.size()))
+        print("iids: {}".format(iids.size()))
+        print("tiids: {}".format(tiids.size()))
 
-      topk10 = scores.topk(10, dim=0)
-      topk5 = scores.topk(5, dim=0)
-      topk1 = scores.topk(1, dim=0)
-      topk10_iids = iids[topk10.indices]
-      topk5_iids = iids[topk5.indices]
-      topk1_iids = iids[topk1.indices]
+        topk10 = scores.topk(10, dim=1)
+        topk5 = scores.topk(5, dim=1)
+        topk1 = scores.topk(1, dim=1)
 
-      ir_r10 = (tiids.unsqueeze(0) == topk10_iids).float().max(dim=0)[0].mean()
-      ir_r5 = (tiids.unsqueeze(0) == topk5_iids).float().max(dim=0)[0].mean()
-      ir_r1 = (tiids.unsqueeze(0) == topk1_iids).float().max(dim=0)[0].mean()
+        topk10_iids = tiids[topk10.indices]
+        topk5_iids = tiids[topk5.indices]
+        topk1_iids = tiids[topk1.indices]
 
-      eval_result = {
-          "tr_r10": tr_r10.item() * 100.0, 
-          "tr_r5": tr_r5.item() * 100.0, 
-          "tr_r1": tr_r1.item() * 100.0, 
-          "ir_r10": ir_r10.item() * 100.0, 
-          "ir_r5": ir_r5.item() * 100.0, 
-          "ir_r1": ir_r1.item() * 100.0, 
-          "average_score": 100.0 * (tr_r1 + tr_r5 + tr_r10 + ir_r1 + ir_r5 + ir_r10).item() / 6.0, 
-      }
+        tr_r10 = (iids.unsqueeze(1) == topk10_iids).float().max(dim=1)[0].mean()
+        tr_r5 = (iids.unsqueeze(1) == topk5_iids).float().max(dim=1)[0].mean()
+        tr_r1 = (iids.unsqueeze(1) == topk1_iids).float().max(dim=1)[0].mean()
 
-      print('* Eval result = %s' % json.dumps(eval_result))
-      return eval_result, "average_score"
-    
+        topk10 = scores.topk(10, dim=0)
+        topk5 = scores.topk(5, dim=0)
+        topk1 = scores.topk(1, dim=0)
+        topk10_iids = iids[topk10.indices]
+        topk5_iids = iids[topk5.indices]
+        topk1_iids = iids[topk1.indices]
 
+        ir_r10 = (tiids.unsqueeze(0) == topk10_iids).float().max(dim=0)[0].mean()
+        ir_r5 = (tiids.unsqueeze(0) == topk5_iids).float().max(dim=0)[0].mean()
+        ir_r1 = (tiids.unsqueeze(0) == topk1_iids).float().max(dim=0)[0].mean()
 
+        eval_result = {
+            "tr_r10": tr_r10.item() * 100.0,
+            "tr_r5": tr_r5.item() * 100.0,
+            "tr_r1": tr_r1.item() * 100.0,
+            "ir_r10": ir_r10.item() * 100.0,
+            "ir_r5": ir_r5.item() * 100.0,
+            "ir_r1": ir_r1.item() * 100.0,
+            "average_score": 100.0 * (tr_r1 + tr_r5 + tr_r10 + ir_r1 + ir_r5 + ir_r10).item() / 6.0,
+        }
 
-
+        print('* Eval result = %s' % json.dumps(eval_result))
+        return eval_result, "average_score"
 
 
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
-        self, data_path, split, transform, 
-        tokenizer, num_max_bpe_tokens, task=None,
+            self, data_path, split, transform,
+            tokenizer, num_max_bpe_tokens, task=None,
     ):
         index_files = self.get_index_files(split, task=task)
         self.tokenizer = tokenizer
@@ -390,7 +344,7 @@ class BaseDataset(torch.utils.data.Dataset):
         tokens = [self.bos_token_id] + tokens[:] + [self.eos_token_id]
         num_tokens = len(tokens)
         padding_mask = [0] * num_tokens + [1] * (max_len - num_tokens)
-        return tokens + [1] * (max_len - num_tokens), padding_mask, num_tokens ###changed
+        return tokens + [1] * (max_len - num_tokens), padding_mask, num_tokens  ###changed
 
     def _get_image_text_example(self, index: int, data: dict):
         item = self.items[index]
@@ -425,16 +379,17 @@ class BaseDataset(torch.utils.data.Dataset):
         body += "\n}"
 
         return head + body
-    
+
+
 class RetrievalDataset(BaseDataset):
     @staticmethod
     def get_index_files(split, task=None):
         if split == "train":
-            return (f"{task}.train.jsonl", )
+            return (f"{task}.train.jsonl",)
         elif split == "val":
-            return (f"{task}.val.jsonl", )
+            return (f"{task}.val.jsonl",)
         elif split == "test":
-            return (f"{task}.test.jsonl", )
+            return (f"{task}.test.jsonl",)
         else:
             raise RuntimeError("split %s is not found!" % split)
 
@@ -443,16 +398,16 @@ class RetrievalDataset(BaseDataset):
         data["image_id"] = self.items[index]["image_id"]
         return data
 
-def build_transform(input_size):
 
-    
+def build_transform(input_size):
     t = transforms.Compose([
-        transforms.Resize((input_size, input_size), interpolation=3), 
+        transforms.Resize((input_size, input_size), interpolation=3),
         transforms.ToTensor(),
         transforms.Normalize(mean=IMAGENET_INCEPTION_MEAN, std=IMAGENET_INCEPTION_STD)
     ])
 
     return t
+
 
 def merge_batch_tensors_by_dict_key(batch):
     batch_tensors = {}
@@ -472,7 +427,7 @@ def evaluate(data_loader, model, device, handler):
     header = 'Test:'
 
     model.eval()
-    
+
     handler.before_eval(metric_logger=metric_logger, data_loader=data_loader)
 
     for data in metric_logger.log_every(data_loader, 10, header):
@@ -485,94 +440,89 @@ def evaluate(data_loader, model, device, handler):
     return handler.after_eval()
 
 
+def get_train_dataset(transform, tokenizer, batch_size, num_workers, opt_kwargs):
+    ###################train_data_loader
+    dataset_train = RetrievalDataset(
+        data_path='../data/flickr', split="train",
+        transform=transform, tokenizer=tokenizer,
+        num_max_bpe_tokens=64,
+        task='flickr30k', **opt_kwargs,
+    )
+    #  sampler = torch.utils.data.SequentialSampler(dataset_train)
+    data_loader_train = torch.utils.data.DataLoader(
+        dataset_train, shuffle=True,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=False,
+        collate_fn=merge_batch_tensors_by_dict_key,
+    )
+    return data_loader_train
 
 
-def get_train_dataset(transform,tokenizer, batch_size, num_workers,opt_kwargs):
-###################train_data_loader
-  dataset_train = RetrievalDataset(
-          data_path='../data/flickr', split="train", 
-          transform=transform, tokenizer=tokenizer, 
-          num_max_bpe_tokens=64, 
-          task='flickr30k', **opt_kwargs, 
-      )
-#  sampler = torch.utils.data.SequentialSampler(dataset_train)
-  data_loader_train = torch.utils.data.DataLoader(
-          dataset_train, shuffle=True,
-          batch_size=batch_size,
-          num_workers=num_workers,
-          drop_last=False,
-          collate_fn=merge_batch_tensors_by_dict_key,
-      )
-  return data_loader_train
+def get_test_dataset(transform, tokenizer, batch_size, num_workers, opt_kwargs):
+    #####test data loader
+    dataset_test = RetrievalDataset(
+        data_path='../data/flickr', split="test",
+        transform=transform, tokenizer=tokenizer,
+        num_max_bpe_tokens=64,
+        task='flickr30k', **opt_kwargs,
+    )
+    sampler = torch.utils.data.SequentialSampler(dataset_test)
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset_test, sampler=sampler,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=False,
+        collate_fn=merge_batch_tensors_by_dict_key,
+    )
+    return data_loader_test
 
-def get_test_dataset(transform,tokenizer, batch_size, num_workers,opt_kwargs):
-#####test data loader
-  dataset_test = RetrievalDataset(
-          data_path='../data/flickr', split="test", 
-          transform=transform, tokenizer=tokenizer, 
-          num_max_bpe_tokens=64, 
-          task='flickr30k', **opt_kwargs, 
-      )
-  sampler = torch.utils.data.SequentialSampler(dataset_test)
-  data_loader_test = torch.utils.data.DataLoader(
-          dataset_test, sampler=sampler,
-          batch_size=batch_size,
-          num_workers=num_workers,
-          drop_last=False,
-          collate_fn=merge_batch_tensors_by_dict_key,
-      )
-  return data_loader_test
 
-def get_val_dataset(transform,tokenizer, batch_size, num_workers,opt_kwargs):
-#######################
-  dataset_val = RetrievalDataset(
-          data_path='../data/flickr', split="val", 
-          transform=transform, tokenizer=tokenizer, 
-          num_max_bpe_tokens=64, 
-          task='flickr30k', **opt_kwargs, 
-      )
-  sampler = torch.utils.data.SequentialSampler(dataset_val)
-  data_loader_val = torch.utils.data.DataLoader(
-          dataset_val, sampler=sampler,
-          batch_size=batch_size,
-          num_workers=num_workers,
-          drop_last=False,
-          collate_fn=merge_batch_tensors_by_dict_key,
-      )
-  return data_loader_val
+def get_val_dataset(transform, tokenizer, batch_size, num_workers, opt_kwargs):
+    #######################
+    dataset_val = RetrievalDataset(
+        data_path='../data/flickr', split="val",
+        transform=transform, tokenizer=tokenizer,
+        num_max_bpe_tokens=64,
+        task='flickr30k', **opt_kwargs,
+    )
+    sampler = torch.utils.data.SequentialSampler(dataset_val)
+    data_loader_val = torch.utils.data.DataLoader(
+        dataset_val, sampler=sampler,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=False,
+        collate_fn=merge_batch_tensors_by_dict_key,
+    )
+    return data_loader_val
 
-backbones = ["openai/clip-vit-base-patch16", "openai/clip-vit-base-patch32","openai/clip-vit-large-patch14","openai/clip-vit-large-patch14-336"]
-# backbone = "openai/clip-vit-large-patch14-336"
-  
-  # 
 
+backbones = ["openai/clip-vit-base-patch16", "openai/clip-vit-base-patch32", "openai/clip-vit-large-patch14",
+             "openai/clip-vit-large-patch14-336"]
 
 
 if __name__ == "__main__":
-  device = torch.device('cpu')#cuda
-  task_handler = RetrievalHandler()
-  
-  backbone = "openai/clip-vit-base-patch16"
+    device = torch.device('cpu')  # cuda
+    task_handler = RetrievalHandler()
 
-  # model = CustomCLIP(backbone)
-  model = CLIPModel.from_pretrained(backbone)
+    backbone = "openai/clip-vit-base-patch16"
 
+    # model = CustomCLIP(backbone)
+    model = CLIPModel.from_pretrained(backbone)
 
-  transform = CLIPImageProcessor.from_pretrained(backbone)
-  tokenizer = CLIPTokenizerFast.from_pretrained(backbone)
-  opt_kwargs = {}
-  args = {}
-  args['batch_size'] = 2
-  args['num_workers'] = 8
-  data_loader_train = get_train_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
-  data_loader_test = get_test_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
-  data_loader_val = get_val_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
-  
-        
- 
-  for batch_idx, samples in enumerate(data_loader_train):
-    print('test',batch_idx, samples)
-    break
+    transform = CLIPImageProcessor.from_pretrained(backbone)
+    tokenizer = CLIPTokenizerFast.from_pretrained(backbone)
+    opt_kwargs = {}
+    args = {}
+    args['batch_size'] = 2
+    args['num_workers'] = 8
+    data_loader_train = get_train_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
+    data_loader_test = get_test_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
+    data_loader_val = get_val_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
 
-  # ext_test_stats, task_key = evaluate(data_loader_test, model, device, task_handler)
-  # print(f"Accuracy of the network on the {len(data_loader_test.dataset)} test images: {ext_test_stats[task_key]:.3f}%")
+    for batch_idx, samples in enumerate(data_loader_train):
+        print('test', batch_idx, samples)
+        break
+
+    # ext_test_stats, task_key = evaluate(data_loader_test, model, device, task_handler)
+    # print(f"Accuracy of the network on the {len(data_loader_test.dataset)} test images: {ext_test_stats[task_key]:.3f}%")

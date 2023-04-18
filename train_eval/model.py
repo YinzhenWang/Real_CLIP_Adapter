@@ -1,16 +1,15 @@
+import numpy as np
 import torch
-import torch.utils.checkpoint
-from torch import nn
-from transformers import AutoProcessor, CLIPModel,CLIPTextModel,CLIPVisionModel,  CLIPTextModelWithProjection,CLIPVisionModelWithProjection
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+import torch.utils.checkpoint
 from timm.models.layers import trunc_normal_ as __call_trunc_normal_
+from transformers import CLIPTextModelWithProjection, CLIPVisionModelWithProjection
 
 
 class CLIPOutput:
-    def __init__(self,loss, text_embeds, image_embeds):
+    def __init__(self, loss, text_embeds, image_embeds):
         self.loss = loss
         self.text_embeds = text_embeds
         self.image_embeds = image_embeds
@@ -25,17 +24,20 @@ class GatherLayer(torch.autograd.Function):
     Gather tensors from all workers with support for backward propagation:
     This implementation does not cut the gradients as torch.distributed.all_gather does.
     """
+
     @staticmethod
     def forward(ctx, x):
         output = [torch.zeros_like(x) for _ in range(dist.get_world_size())]
         dist.all_gather(output, x)
         return tuple(output)
+
     @staticmethod
     def backward(ctx, *grads):
         all_gradients = torch.stack(grads)
         dist.all_reduce(all_gradients)
         return all_gradients[dist.get_rank()]
-    
+
+
 def gather_features(
         image_features,
         text_features,
@@ -46,6 +48,7 @@ def gather_features(
     all_text_features = torch.cat(gathered_text_features)
 
     return all_image_features, all_text_features
+
 
 # The implementation code is modified from open_clip (https://github.com/mlfoundations/open_clip.git)
 class ClipLoss(nn.Module):
@@ -67,9 +70,7 @@ class ClipLoss(nn.Module):
     def forward(self, image_features, text_features, logit_scale):
         device = image_features.device
         if self.world_size > 1:
-            all_image_features, all_text_features = gather_features(
-                image_features, text_features
-            )
+            all_image_features, all_text_features = gather_features(image_features, text_features)
 
             logits_per_image = logit_scale * image_features @ all_text_features.T
             logits_per_text = logit_scale * text_features @ all_image_features.T
@@ -89,15 +90,12 @@ class ClipLoss(nn.Module):
         else:
             labels = self.labels[device]
 
-        total_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-            ) / 2
+        total_loss = (F.cross_entropy(logits_per_image, labels) + F.cross_entropy(logits_per_text, labels)) / 2
         return total_loss, logits_per_image, logits_per_text
 
 
 class CLIPALL(nn.Module):
-    
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -107,7 +105,7 @@ class CLIPALL(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def __init__(self,backbone):
+    def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
         self.cliptext = CLIPTextModelWithProjection.from_pretrained(self.backbone)
@@ -115,9 +113,7 @@ class CLIPALL(nn.Module):
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-
-
-    def forward(self, input_ids,pixel_values,attention_mask,image_id = None):
+    def forward(self, input_ids, pixel_values, attention_mask, image_id=None):
 
         text_input = {}
         text_input['input_ids'] = input_ids
@@ -132,7 +128,7 @@ class CLIPALL(nn.Module):
         text_embeds = text_outputs.text_embeds / text_outputs.text_embeds.norm(p=2, dim=-1, keepdim=True)
 
         loss, logits_per_image, logits_per_text = self.criterion(image_embeds, text_embeds, self.logit_scale.exp())
-        
+
         output = CLIPOutput(
             loss=loss,
             text_embeds=text_embeds,

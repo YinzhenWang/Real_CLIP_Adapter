@@ -1,25 +1,21 @@
-import sys
-sys.path.append('../') # could be comment out
-
-import numpy as np
-import time
 import os
-from tqdm import tqdm
+import sys
+import time
 
 import torch
 import torch.nn.functional as F
-from torch.nn.parallel import DataParallel
-
-from transformers import CLIPImageProcessor
-from transformers.adapters import LoRAConfig
-
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from timm.utils import AverageMeter
+from torch.nn.parallel import DataParallel
+from tqdm import tqdm
+from transformers import CLIPImageProcessor
 
+from Visionmodel import MIM, CLIPVisionMasked
 from data_imagenet_mini import get_imagenet_mini
 from mask_generator import MaskGenerator
-from Visionmodel import MIM, CLIPVisionMasked
 from utils import create_logger
+
+sys.path.append('../')  # could be comment out
 
 
 def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_patch_size, model_patch_size,
@@ -29,7 +25,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
     transform = CLIPImageProcessor.from_pretrained("openai/clip-vit-base-patch16")
     mask_generator = MaskGenerator(input_size=224, mask_patch_size=mask_patch_size,
                                    model_patch_size=model_patch_size, mask_ratio=mask_ratio)
-    
+
     # Train set: 34745; Val set: 3923
     print("Loading dataset...")
     trainset = get_imagenet_mini(data_path, 'train', transform, mask_generator, 
@@ -62,7 +58,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         print('Start single GPU training.')
 
     # Optimizer
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), 
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
                                   lr=5e-4, weight_decay=0.05, betas=(0.9, 0.999))
 
     # Calculate parameter
@@ -112,7 +108,6 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
                 loop.set_postfix(loss=loss_meter.avg)
 
         logger.info('train_epoch{}_adapter_{}, loss:{:.4f}'.format(epoch, configname, loss_meter.avg))
-        
 
         # Validate model
         if epoch % 5 == 0:
@@ -133,7 +128,6 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
                         loop.set_postfix(loss=val_loss_meter.avg)
                 logger.info('val_epoch{}_adapter_{}, loss:{:.4f}'.format(epoch, configname, val_loss_meter.avg))
 
-        
         # Save checkpoint
         if epoch % 10 == 0:
             # Unwrap model from DataParallel
@@ -149,27 +143,28 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
             vision_encoder.clipvision.save_adapter(output_path, f"{configname}")
 
             mim_checkpoint = {'model': saved_model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch,
-                        'config': config}
+                              'optimizer': optimizer.state_dict(),
+                              'lr_scheduler': lr_scheduler.state_dict(),
+                              'epoch': epoch,
+                              'config': config}
             mim_checkpoint_path = os.path.join(output_path, f'mim_epoch_{epoch}.pth')
             torch.save(mim_checkpoint, mim_checkpoint_path)
-    
+
 
 if __name__ == "__main__":
     # adapter config
-    configs = {"LoRA": LoRAConfig(r=8, alpha=16)}
+    from adapter_configs import configs
     config_name = "LoRA"
+    config = configs[config_name]
 
     # logger and model saved dir
     timestamp = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())
     output_dir = os.path.join('./Log', f'{config_name}_mim_{timestamp}')
     os.makedirs(output_dir, exist_ok=True)
-    logger = create_logger(os.path.join(output_dir, "masked_modeling_log_" + timestamp + ".txt"), 
+    logger = create_logger(os.path.join(output_dir, "masked_modeling_log_" + timestamp + ".txt"),
                            add_stream=False)
     print('Save path:', output_dir)
-    
+
     train_epochs = 50
     warmup_epochs = 5
     data_path = '../dataset/data/imagenet'
@@ -178,5 +173,5 @@ if __name__ == "__main__":
     mask_ratio = 0.6
     batch_size = 256
 
-    masked_modeling(data_path, config_name, configs[config_name], train_epochs, warmup_epochs,
+    masked_modeling(data_path, config_name, config, train_epochs, warmup_epochs,
                     mask_patch_size, model_patch_size, mask_ratio, output_dir, batch_size, check_grad=False)
