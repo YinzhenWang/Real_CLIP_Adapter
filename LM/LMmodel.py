@@ -1,7 +1,7 @@
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel
+from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, CLIPVisionModelWithProjection
 from torch.utils.data import Dataset, DataLoader
 import os
 import sys
@@ -9,6 +9,10 @@ import json
 import random
 from torchvision.datasets.folder import default_loader
 from typing import List, Optional, Tuple
+from transformers.models.clip.configuration_clip import CLIPConfig, CLIPTextConfig, CLIPVisionConfig
+from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig, LoRAConfig
+from transformers.models.clip.modeling_clip import CLIPTextTransformer
+import copy
 
 
 def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
@@ -179,3 +183,48 @@ def get_dataset(split, tokenizer, batch_size, num_workers):
         collate_fn=merge_batch_tensors_by_dict_key,
     )
     return data_loader
+
+
+class VitForText(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = "openai/clip-vit-base-patch16"
+        self.projection_dim = 512
+
+        self.clipvision = CLIPVisionModelWithProjection.from_pretrained(self.backbone, ignore_mismatched_sizes=True)
+
+        config = LoRAConfig(r=8, alpha=16)
+        self.clipvision.add_adapter("LoRA", config=config)
+        self.clipvision.set_active_adapters("LoRA")
+        self.clipvision.train_adapter("LoRA")
+
+        self.cliptext = CLIPTextModel.from_pretrained(self.backbone)
+
+        text_config = CLIPTextConfig(pad_token_id=1, bos_token_id=49406, eos_token_id=49407, hidden_size=768)
+        self.cliptext.text_model = CLIPTextTransformer(text_config)
+        self.cliptext.text_model.encoder = copy.deepcopy(self.clipvision.vision_model.encoder)
+        self.text_projection = nn.Linear(text_config.hidden_size, self.projection_dim, bias=False)
+
+        for name, param in self.clipvision.named_parameters():
+            param.requires_grad = False
+
+        for name, param in self.cliptext.named_parameters():
+            if "lora" not in name and "encoder" in name:
+                param.requires_grad = False
+
+        self.classifer = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(self.projection_dim, self.projection_dim),
+            nn.Tanh(),
+            nn.Dropout(0.2),
+            nn.Linear(self.projection_dim, 2)
+        )
+
+    def forward(self, input):
+        text_outputs = self.cliptext(**input)
+
+        text_embeds = self.text_projection(text_outputs[1])
+        logit = self.classifer(text_embeds)
+
+        return logit
