@@ -1,32 +1,21 @@
-
-import numpy as np
+import logging
 import os
-from tqdm import tqdm
-from PIL import Image
-import requests
 import time
 
+import numpy as np
 import torch
-from torch import nn
-from torch.optim import Adam
 import torch.nn.functional as F
+from torch import nn
 from torch.nn.parallel import DataParallel
-from torch.utils.data import DataLoader, DistributedSampler, RandomSampler
+from tqdm import tqdm
+from transformers import CLIPModel, CLIPTokenizer, CLIPImageProcessor
 
-
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, AutoTokenizer
-from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig
-import transformers
-from transformers import CLIPModel, XLMRobertaTokenizer, CLIPTokenizer, CLIPImageProcessor, CLIPTokenizerFast
-from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
-
-import logging
-logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR) # not output warnings
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)  # not output warnings
 
 from timm.scheduler.cosine_lr import CosineLRScheduler
+from timm.utils import AverageMeter
 
-import data_pre
-
+from data_pre import get_train_dataset, get_test_dataset, get_val_dataset, evaluate, RetrievalHandler
 
 
 class ClipLoss(nn.Module):
@@ -64,22 +53,15 @@ class ClipLoss(nn.Module):
             labels = self.labels[device]
 
         total_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-            ) / 2
+                             F.cross_entropy(logits_per_image, labels) +
+                             F.cross_entropy(logits_per_text, labels)
+                     ) / 2
         return total_loss, logits_per_image, logits_per_text
 
 
 configs = {
-        "adapter": AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu"),
-        "prefix": PrefixTuningConfig(flat=False, prefix_length=30),
-        "LoRA": LoRAConfig(r=8, alpha=16),
-        "IA3": IA3Config(),
-        "mam": MAMConfig(),
-        "unipelt": UniPELTConfig(),
-        "noadapter": "None adapter",
-    }
-
+    "noadapter": "None adapter",
+}
 
 if __name__ == "__main__":
 
@@ -91,13 +73,10 @@ if __name__ == "__main__":
 
     print('Save path:', output_dir)
 
-
     log_path = os.path.join(output_dir, "log.txt")
 
-
     backbone = "openai/clip-vit-base-patch16"
-    task_handler = data_pre.RetrievalHandler()
-
+    task_handler = RetrievalHandler()
 
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
@@ -106,18 +85,17 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
-
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     transform = CLIPImageProcessor.from_pretrained(backbone)
     tokenizer = CLIPTokenizer.from_pretrained(backbone)
     opt_kwargs = {}
     args = {}
-    args['batch_size'] = 128
+    args['batch_size'] = 2
     args['num_workers'] = 8
-    data_loader_train = data_pre.get_train_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
-    data_loader_test = data_pre.get_test_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
-    data_loader_val = data_pre.get_val_dataset(transform,tokenizer, args['batch_size'], args['num_workers'],opt_kwargs)
+    data_loader_train = get_train_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
+    data_loader_test = get_test_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
+    data_loader_val = get_val_dataset(transform, tokenizer, args['batch_size'], args['num_workers'], opt_kwargs)
 
     config_name = "noadapter"
     config = configs[config_name]
@@ -132,67 +110,78 @@ if __name__ == "__main__":
 
     criterion = ClipLoss()
 
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                                  lr=1e-8, weight_decay=0.05, betas=(0.9, 0.999))
-    epochs = 10
-    warmup_epochs = 1
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-7)
+
+    # Calculate parameter
+    n_params = sum(p.numel() for p in model.parameters())
+    n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total params: {n_params}, trained params: {n_train_params}")
+
+    epochs = 20
+    warmup_epochs = 5
     n_iter_per_epoch = len(data_loader_train)
     num_steps = int(epochs * n_iter_per_epoch)
     warmup_steps = int(warmup_epochs * n_iter_per_epoch)
     lr_scheduler = CosineLRScheduler(
         optimizer,
         t_initial=num_steps,
-        lr_min=5e-6,
-        warmup_lr_init=5e-7,
+        lr_min=1e-8,
+        warmup_lr_init=1e-8,
         warmup_t=warmup_steps,
         cycle_limit=1,
         t_in_epochs=False,
     )
 
-
     model.to(device)
     # Wrap model in DataParallel for multi-GPU training
+    data_parallel = False
     if torch.cuda.device_count() > 1:
         logger.info('Multi-GPU training.')
         print('Start multi-GPU training.')
         model = DataParallel(model)
+        data_parallel = True
     else:
         logger.info('Single GPU training.')
         print('Start single GPU training.')
 
-
     for _ in range(epochs):
+        train_loss = AverageMeter()
         model.train()
         with tqdm(data_loader_train, desc='train {}'.format(_)) as loop:
             for x in loop:
-                for key,value in x.items():
+                for key, value in x.items():
                     x[key] = torch.tensor(np.array(value)).to(device, non_blocking=True)
 
                 inputs = {}
-                inputs["pixel_values"] =  torch.squeeze(x['pixel_values'])
+                inputs["pixel_values"] = torch.squeeze(x['pixel_values'])
                 inputs["input_ids"] = x['input_ids']
-                inputs["attention_mask"] =(1 - x['attention_mask'])
+                inputs["attention_mask"] = (1 - x['attention_mask'])
                 outputs = model(**inputs)
                 vision_cls = outputs.image_embeds
                 language_cls = outputs.text_embeds
 
-                loss,logit1,logit2 = criterion(vision_cls, language_cls, model.module.logit_scale)
+                if data_parallel:
+                    loss, logit1, logit2 = criterion(vision_cls, language_cls, model.module.logit_scale)
+                else:
+                    loss, logit1, logit2 = criterion(vision_cls, language_cls, model.logit_scale)
 
                 optimizer.zero_grad()
                 if loss != 0:
                     loss.backward()
                 optimizer.step()
-                loop.set_postfix(loss=loss)
-        logger.info('train_epoch{}_clip_{}_acc_{}'.format(_,'no',loss))
+                train_loss.update(loss.item(), inputs["pixel_values"].size(0))
+                loop.set_postfix(loss=train_loss.avg)
+        logger.info('train_epoch{}_clip_{}_loss_{}'.format(_, 'no', loss.item()))
 
-        ext_val_stats, val_key = data_pre.evaluate(data_loader_val, model, device, task_handler)
-        print(f"Accuracy of the network on the {len(data_loader_val.dataset)} test images: {ext_val_stats[val_key]:.3f}%")
-        
+        ext_val_stats, val_key = evaluate(data_loader_val, model, device, task_handler)
+        print(
+            f"Accuracy of the network on the {len(data_loader_val.dataset)} test images: {ext_val_stats[val_key]:.3f}%")
 
         # eval and save model
         if _ % 3 == 0:
-            ext_test_stats, task_key = data_pre.evaluate(data_loader_test, model, device, task_handler)
-            print(f"Accuracy of the network on the {len(data_loader_test.dataset)} test images: {ext_test_stats[task_key]:.3f}%")
+            ext_test_stats, task_key = evaluate(data_loader_test, model, device, task_handler)
+            print(
+                f"Accuracy of the network on the {len(data_loader_test.dataset)} test images: {ext_test_stats[task_key]:.3f}%")
             # Unwrap model from DataParallel
             if isinstance(model, DataParallel):
                 saved_model = model.module
@@ -201,13 +190,11 @@ if __name__ == "__main__":
             # Save clip pretrained
 
             clip_checkpoint = {'model': saved_model.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'lr_scheduler': lr_scheduler.state_dict(),
-                            'epoch': _,
-                            'config': config}
+                               'optimizer': optimizer.state_dict(),
+                               'lr_scheduler': lr_scheduler.state_dict(),
+                               'epoch': _,
+                               'config': config}
             output_path = os.path.join(output_dir, f'ckpt_epoch_{_}')
             os.makedirs(output_path, exist_ok=True)
             clip_checkpoint_path = os.path.join(output_path, f'clip_epoch_{_}.pth')
             torch.save(clip_checkpoint, clip_checkpoint_path)
-
-    
