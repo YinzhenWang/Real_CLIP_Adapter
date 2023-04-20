@@ -246,7 +246,7 @@ if __name__ == "__main__":
     model_patch_size = 16
     mask_ratio = 0.6
     batch_size = 256
-    weight = 0.1 # cliploss weight
+    weight = 0.1 # clip loss weight
 
     masked_modeling(data_path, config_name, config, train_epochs, warmup_epochs,
                     mask_patch_size, model_patch_size, mask_ratio, output_dir, weight, batch_size, check_grad=False)
