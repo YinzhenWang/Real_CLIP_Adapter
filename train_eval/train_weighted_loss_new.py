@@ -10,7 +10,7 @@ from torch.nn.parallel import DataParallel
 from tqdm import tqdm
 from transformers import CLIPImageProcessor,CLIPTokenizer
 
-from Visionmodel import CLIPWeightedLOSS, CLIPVisionMasked
+from Visionmodel_new import CLIPWeightedLOSS, CLIPVisionMasked
 from mask_generator import MaskGenerator
 import logging
 import data_pre
