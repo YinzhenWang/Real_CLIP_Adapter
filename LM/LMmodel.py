@@ -13,6 +13,7 @@ from transformers.models.clip.configuration_clip import CLIPConfig, CLIPTextConf
 from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig, LoRAConfig
 from transformers.models.clip.modeling_clip import CLIPTextTransformer
 import copy
+from datasets import load_dataset
 
 
 def contrastive_loss(logits: torch.Tensor) -> torch.Tensor:
@@ -228,3 +229,108 @@ class VitForText(nn.Module):
         logit = self.classifer(text_embeds)
 
         return logit
+
+
+class CLIPTextMLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # You need to download the clip-vit from huggingface and replace the config.json
+        self.cliptext = CLIPTextModel.from_pretrained("../clip-vit-base-patch16",ignore_mismatched_sizes=True)
+        self.dense = nn.Linear(512, 512)
+        self.layer_norm = nn.LayerNorm(512, eps=1e-05)
+
+        self.decoder = nn.Linear(512, 49409)
+        self.bias = nn.Parameter(torch.zeros(49409))
+        self.decoder.bias = self.bias
+
+    def forward(self, inputs, labels):
+        text_outputs = self.cliptext(input_ids=inputs['input_ids'], attention_mask=inputs["attention_mask"])
+        x = self.dense(text_outputs[0])
+        x = torch.nn.GELU()(x)
+        x = self.layer_norm(x)
+        x = self.decoder(x)
+
+        labels = labels.to(x.device)
+        loss_fct = torch.nn.CrossEntropyLoss()
+        masked_lm_loss = loss_fct(x.view(-1, 49409), labels.view(-1))
+
+        return x, masked_lm_loss
+
+
+class CLIPMaskDataset(Dataset):
+
+    def __init__(
+            self, data_path, split,
+            tokenizer, num_max_bpe_tokens
+    ):
+
+        self.tokenizer = tokenizer
+        self.num_max_bpe_tokens = num_max_bpe_tokens
+        self.data_path = data_path
+
+        self.bos_token_id = 49406
+        self.eos_token_id = 49407
+        self.pad_token_id = 49407
+        self.mask_token_id = 49408
+        self.loader = default_loader
+        self.split = split
+        dataset = load_dataset("bookcorpus", split='train')
+        self.data = random.sample(dataset['text'],700000)
+
+        print(len(self.data))
+
+    def _get_text_segment(self, text_segment, max_len=64):
+        if isinstance(text_segment, str):
+
+            tokens = self.tokenizer(text_segment, return_tensors="pt")["input_ids"].tolist()[0]
+        else:
+            raise RuntimeError("only accept str!")
+        if len(tokens) == 0:
+            raise RuntimeError("The text segment should contains at least one tokens!")
+
+        if len(tokens) > max_len - 1:
+            tokens = tokens[:max_len - 1]
+
+        num_tokens = len(tokens)
+        attention_mask = [1] * num_tokens + [0] * (max_len - num_tokens)
+        full_tokens = tokens + [self.eos_token_id] * (max_len - num_tokens)
+        masked_tokens = copy.deepcopy(full_tokens)
+        for i in range(len(masked_tokens)):
+            if masked_tokens[i] == self.bos_token_id:
+                continue
+            elif masked_tokens[i] == self.eos_token_id:
+                break
+            else:
+                if random.random() < 0.15:
+                    masked_tokens[i] = self.mask_token_id
+        return full_tokens, masked_tokens, attention_mask  ###changed
+
+    def __getitem__(self, index: int):
+        text = self.data[index]
+        full_tokens, masked_tokens, attention_mask = self._get_text_segment(text)
+        data = {}
+        data["full_tokens"] = torch.tensor(full_tokens)
+        data["masked_tokens"] = torch.tensor(masked_tokens)
+        data["attention_mask"] = torch.tensor(attention_mask)
+        return data
+
+    def __len__(self):
+        return len(self.data)
+
+
+def get_masked_dataset(split, tokenizer, batch_size, num_workers):
+    #######################
+    dataset = CLIPMaskDataset(
+        data_path='./data/flickr', split=split,
+        tokenizer=tokenizer, num_max_bpe_tokens=512,
+    )
+    sampler = torch.utils.data.SequentialSampler(dataset)
+
+    data_loader = torch.utils.data.DataLoader(
+        dataset, sampler=sampler,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=False,
+        collate_fn=merge_batch_tensors_by_dict_key,
+    )
+    return data_loader
