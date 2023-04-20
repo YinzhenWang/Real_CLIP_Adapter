@@ -222,9 +222,9 @@ class CLIPWeightedLOSS(nn.Module):
 
         # print('mask shape:', mask.shape) # [64, 14, 14]
 
-        mask = mask.repeat_interleave(16, 1).repeat_interleave(16, 2).unsqueeze(1).contiguous() # add
+        mask = mask.repeat_interleave(16, 1).repeat_interleave(16, 2).unsqueeze(1).contiguous()
         loss_recon = F.l1_loss(pixel_values, x_rec, reduction='none')
-        loss_recon = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3 # add
+        loss_recon = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
 
         loss = clip_loss * self.weight + loss_recon * (1 - self.weight)
         
