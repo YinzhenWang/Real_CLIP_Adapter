@@ -125,7 +125,7 @@ if __name__ == "__main__":
     lr_scheduler = CosineLRScheduler(
         optimizer,
         t_initial=num_steps,
-        lr_min=1e-8,
+        lr_min=1e-7,
         warmup_lr_init=1e-8,
         warmup_t=warmup_steps,
         cycle_limit=1,
@@ -148,7 +148,7 @@ if __name__ == "__main__":
         train_loss = AverageMeter()
         model.train()
         with tqdm(data_loader_train, desc='train {}'.format(_)) as loop:
-            for x in loop:
+            for idx, x in enumerate(loop):
                 for key, value in x.items():
                     x[key] = torch.tensor(np.array(value)).to(device, non_blocking=True)
 
@@ -169,6 +169,7 @@ if __name__ == "__main__":
                 if loss != 0:
                     loss.backward()
                 optimizer.step()
+                lr_scheduler.step_update(_ * num_steps + idx)
                 train_loss.update(loss.item(), inputs["pixel_values"].size(0))
                 loop.set_postfix(loss=train_loss.avg)
         logger.info('train_epoch{}_clip_{}_loss_{}'.format(_, 'no', loss.item()))
