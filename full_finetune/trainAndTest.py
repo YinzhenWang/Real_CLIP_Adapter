@@ -1,18 +1,14 @@
+import logging
+
 import torch
-from torch import nn
-from torch.optim import Adam
-from torch.utils.data import DataLoader, DistributedSampler, RandomSampler
 from torch.nn.parallel import DataParallel
 from tqdm import tqdm
-from PIL import Image
-import requests
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, AutoTokenizer
-from transformers.adapters import AdapterConfig, MAMConfig, UniPELTConfig
-import data_pre
-from transformers import CLIPModel, XLMRobertaTokenizer, CLIPTokenizerFast, CLIPImageProcessor
-import logging
+from timm.utils import AverageMeter
+from transformers import CLIPModel, CLIPTokenizerFast, CLIPImageProcessor
+from transformers import CLIPTextModel, CLIPVisionModel
 from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
 
+import data_pre
 from train_eval.model import ClipLoss
 
 if __name__ == "__main__":
@@ -95,7 +91,7 @@ if __name__ == "__main__":
     criterion = ClipLoss()
 
     for _ in range(10):
-
+        finetune_loss = AverageMeter()
         model.train()
         with tqdm(data_loader_train, desc='line2 train {}'.format(_)) as loop:
             for x in loop:
@@ -126,8 +122,10 @@ if __name__ == "__main__":
                 if loss != 0:
                     loss.backward()
                 optimizer.step()
-                loop.set_postfix(loss=loss)
-        logger.info('train_epoch{}_adapter_{}_acc_{}'.format(_, "none", loss))
+
+                finetune_loss.update(loss.item(), inputs["pixel_values"].size(0))
+                loop.set_postfix(loss=finetune_loss.avg)
+        logger.info('train_epoch{}_adapter_{}_loss_{}'.format(_, "none", finetune_loss.avg))
 
         model.eval()
         ext_test_stats, task_key = data_pre.evaluate(data_loader_test, model, device, task_handler)
