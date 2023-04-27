@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler('fullfinetunelog.txt')
+    handler = logging.FileHandler('cleanlog.txt')
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -44,19 +44,19 @@ if __name__ == "__main__":
     # model.vision_model.train_adapter("adapter_v")
     # model.vision_model.set_active_adapters("adapter_v")
 
-    # for param in model.parameters():
-    #     param.requires_grad = False
-    #
-    # # model.vision_model.load_adapter("./vadapter")
-    # model.vision_model.add_adapter("LoRA_v", configs["LoRA"])
-    # model.vision_model.train_adapter("LoRA_v")
-    # model.vision_model.set_active_adapters("LoRA_v")
-    #
-    # model.text_model.load_adapter("./LM/mlm_mam_epoch19")
-    # model.text_model.set_active_adapters("mam")
-    # model.text_model.add_adapter("LoRA_t",configs["LoRA"])
-    # model.text_model.train_adapter("LoRA_t")
-    # model.text_model.set_active_adapters("LoRA_t")
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # model.vision_model.load_adapter("./vadapter")
+    model.vision_model.add_adapter("LoRA_v", configs["LoRA"])
+    model.vision_model.train_adapter("LoRA_v")
+    model.vision_model.set_active_adapters("LoRA_v")
+
+    model.text_model.load_adapter("./LM/cleaned_mam_epoch19")
+    model.text_model.set_active_adapters("mam")
+    model.text_model.add_adapter("LoRA_t",configs["LoRA"])
+    model.text_model.train_adapter("LoRA_t")
+    model.text_model.set_active_adapters("LoRA_t")
 
     for name, param in model.text_model.named_parameters():
         print(name, param.requires_grad)
@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
     model.to(device)
 
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-7,weight_decay=0.01)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5,weight_decay=0.01)
 
     for _ in range(10):
 
