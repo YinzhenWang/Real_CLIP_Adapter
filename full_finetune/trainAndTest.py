@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, DistributedSampler, RandomSampler
+from torch.nn.parallel import DataParallel
 from tqdm import tqdm
 from PIL import Image
 import requests
@@ -11,6 +12,8 @@ import data_pre
 from transformers import CLIPModel, XLMRobertaTokenizer, CLIPTokenizerFast, CLIPImageProcessor
 import logging
 from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
+
+from train_eval.model import ClipLoss
 
 if __name__ == "__main__":
 
@@ -61,6 +64,17 @@ if __name__ == "__main__":
     for name, param in model.text_model.named_parameters():
         print(name, param.requires_grad)
 
+    # Wrap model in DataParallel for multi-GPU training
+    if torch.cuda.device_count() > 1:
+        logger.info('Multi-GPU training.')
+        print('Start multi-GPU training.')
+        model = DataParallel(model)
+        data_parallel = True
+    else:
+        logger.info('Single GPU training.')
+        print('Start single GPU training.')
+        data_parallel = False
+
     transform = CLIPImageProcessor.from_pretrained(backbone)
     tokenizer = CLIPTokenizerFast.from_pretrained(backbone)
     opt_kwargs = {}
@@ -77,6 +91,8 @@ if __name__ == "__main__":
     model.to(device)
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5,weight_decay=0.01)
+
+    criterion = ClipLoss()
 
     for _ in range(10):
 
@@ -95,7 +111,16 @@ if __name__ == "__main__":
                                 pixel_values=inputs["pixel_values"],
                                 attention_mask=inputs["attention_mask"],
                                 return_loss=True)
-                loss = outputs.loss
+
+                vision_cls = outputs.image_embeds
+                language_cls = outputs.text_embeds
+
+                if data_parallel:
+                    loss, logit1, logit2 = criterion(vision_cls, language_cls, model.module.logit_scale)
+                else:
+                    loss, logit1, logit2 = criterion(vision_cls, language_cls, model.logit_scale)
+
+                # loss = outputs.loss
 
                 optimizer.zero_grad()
                 if loss != 0:
