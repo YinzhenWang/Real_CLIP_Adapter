@@ -63,8 +63,8 @@ configs = {
     "noadapter": "None adapter",
 }
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     # logger and model saved dir
     exp = "finetune"
     timestamp = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())
@@ -104,8 +104,6 @@ if __name__ == "__main__":
 
     for name, param in model.named_parameters():
         param.requires_grad = True
-        if 'logit_scale' in name:
-            param.requires_grad = False
         print(name, param.requires_grad)
 
     criterion = ClipLoss()

@@ -38,24 +38,6 @@ if __name__ == "__main__":
     }
     configname = "mam"
     config = configs[configname]
-    #
-    # model.vision_model.add_adapter("adapter_v", config=config)
-    # model.vision_model.train_adapter("adapter_v")
-    # model.vision_model.set_active_adapters("adapter_v")
-
-    for param in model.parameters():
-        param.requires_grad = False
-
-    # model.vision_model.load_adapter("./vadapter")
-    model.vision_model.add_adapter("LoRA_v", configs["LoRA"])
-    model.vision_model.train_adapter("LoRA_v")
-    model.vision_model.set_active_adapters("LoRA_v")
-
-    model.text_model.load_adapter("./LM/cleaned_mam_epoch19")
-    model.text_model.set_active_adapters("mam")
-    model.text_model.add_adapter("LoRA_t",configs["LoRA"])
-    model.text_model.train_adapter("LoRA_t")
-    model.text_model.set_active_adapters("LoRA_t")
 
     for name, param in model.text_model.named_parameters():
         print(name, param.requires_grad)

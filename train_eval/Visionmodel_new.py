@@ -6,7 +6,6 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
-from mask_generator import MaskGenerator
 from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
 
 
@@ -83,8 +82,8 @@ class ClipLoss(nn.Module):
             labels = self.labels[device]
 
         total_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
+            F.cross_entropy(logits_per_image, labels, reduction='none') +
+            F.cross_entropy(logits_per_text, labels, reduction='none')
             ) / 2
         return total_loss, logits_per_image, logits_per_text
 
