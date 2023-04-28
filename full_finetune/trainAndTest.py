@@ -1,5 +1,5 @@
 import logging
-
+import numpy as np
 import torch
 from torch.nn.parallel import DataParallel
 from tqdm import tqdm
@@ -9,7 +9,7 @@ from transformers import CLIPTextModel, CLIPVisionModel
 from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
 
 import data_pre
-from train_eval.model import ClipLoss
+from model import ClipLoss
 
 if __name__ == "__main__":
 
@@ -97,7 +97,7 @@ if __name__ == "__main__":
             for x in loop:
 
                 for key, value in x.items():
-                    x[key] = torch.tensor(value).to(device, non_blocking=True)
+                    x[key] = torch.tensor(np.array(value)).to(device, non_blocking=True)
 
                 inputs = {}
                 inputs["pixel_values"] = torch.squeeze(x['image'])
