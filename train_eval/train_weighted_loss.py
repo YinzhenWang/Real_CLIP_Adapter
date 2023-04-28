@@ -82,9 +82,9 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         logger.info('Single GPU training.')
         print('Start single GPU training.')
 
-    # Optimizer
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                                  lr=1e-8, weight_decay=0.05, betas=(0.9, 0.999))
+                                   lr=1e-5, weight_decay=0.05, betas=(0.9, 0.999))
+    # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5)
 
     # Calculate parameter
     n_params = sum(p.numel() for p in model.parameters())
@@ -98,8 +98,8 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
     lr_scheduler = CosineLRScheduler(
         optimizer,
         t_initial=num_steps,
-        lr_min=5e-6,
-        warmup_lr_init=5e-7,
+        lr_min=1e-5,
+        warmup_lr_init=1e-6,
         warmup_t=warmup_steps,
         cycle_limit=1,
         t_in_epochs=False,
@@ -108,7 +108,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         # param.requires_grad = False
         # if 'LoRA' in name or "mam" in name:
         #     param.requires_grad = True
-        if "mask_token" in name:
+        if "mask_token" in name:# or 'logit_scale' in name:
             param.requires_grad = False
         print(name, param.requires_grad)
 
@@ -120,7 +120,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         reconloss_meter = AverageMeter()
 
         # Train model
-        optimizer.zero_grad()
+        
         model.train()
         with tqdm(trainset, desc='train_epoch{}_adapter_{}'.format(epoch, configname)) as loop:
 
@@ -134,23 +134,18 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
                 inputs = {}
                 inputs["pixel_values"] = img
                 inputs["input_ids"] = input_ids
-                inputs["attention_mask"] = attention_mask
+                inputs["attention_mask"] = 1-attention_mask
 
                 output = model(**inputs)
                 loss_recon = torch.mean(output['loss_recon'])
                 cliploss = torch.mean(output['clip_loss'])
-
-                # mask = output['mask'].repeat_interleave(model_patch_size, 1).repeat_interleave(model_patch_size, 2).unsqueeze(1).contiguous()
-                # loss_recon = F.l1_loss(img, img_rec, reduction='none')
-                # loss_recon = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
-
-                # loss = cliploss * weight + loss_recon * (1 - weight)
-                # loss = output['loss']
                 loss = torch.mean(output['loss'])
+
+                optimizer.zero_grad()
                 if loss != 0:
                     loss.backward()
-
                 optimizer.step()
+
                 lr_scheduler.step_update(epoch * num_steps + idx)
                 loss_meter.update(loss.item(), img.size(0))
                 cliploss_meter.update(cliploss.item(), img.size(0))
@@ -177,18 +172,12 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
                         inputs = {}
                         inputs["pixel_values"] = img
                         inputs["input_ids"] = input_ids
-                        inputs["attention_mask"] = attention_mask
+                        inputs["attention_mask"] = 1-attention_mask
 
                         output = model(**inputs)
                         loss_recon = torch.mean(output['loss_recon'])
                         cliploss = torch.mean(output['clip_loss'])
 
-                        # mask = output.mask.repeat_interleave(model_patch_size, 1).repeat_interleave(model_patch_size, 2).unsqueeze(1).contiguous()
-                        # loss_recon = F.l1_loss(img, img_rec, reduction='none')
-                        # loss_recon = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
-
-                        # loss = cliploss * weight + loss_recon * (1 - weight)
-                        # loss = output['loss']
                         loss = torch.mean(output['loss'])
                         val_loss_meter.update(loss.item(), img.size(0))
                         loop.set_postfix({'cliploss': cliploss, 'recloss': loss_recon})
@@ -235,13 +224,13 @@ if __name__ == "__main__":
     print('Save path:', output_dir)
 
     train_epochs = 50
-    warmup_epochs = 5
+    warmup_epochs = 1
     data_path = '../dataset/data/imagenet'
     mask_patch_size = 32
     model_patch_size = 16
     mask_ratio = 0.6
-    batch_size = 16
-    weight = 0.1  # clip loss weight
+    batch_size = 64
+    weight = 0.5
 
     masked_modeling(data_path, config_name, config, train_epochs, warmup_epochs,
                     mask_patch_size, model_patch_size, mask_ratio, output_dir, weight, batch_size, check_grad=False)
