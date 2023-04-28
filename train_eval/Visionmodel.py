@@ -1,21 +1,21 @@
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel,CLIPTextModelWithProjection
+from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, CLIPTextModelWithProjection
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 from mask_generator import MaskGenerator
 
+
 class CLIPOutput:
-    def __init__(self,x_rec,loss, text_embeds, image_embeds, mask):
+    def __init__(self, x_rec, loss, text_embeds, image_embeds, mask):
         self.x_rec = x_rec
         self.loss = loss
         self.text_embeds = text_embeds
         self.image_embeds = image_embeds
         self.mask = mask
-
 
 
 # The implementation code is modified from open_clip (https://github.com/mlfoundations/open_clip.git)
@@ -61,10 +61,11 @@ class ClipLoss(nn.Module):
             labels = self.labels[device]
 
         total_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-            ) / 2
+                             F.cross_entropy(logits_per_image, labels, reduction='none') +
+                             F.cross_entropy(logits_per_text, labels, reduction='none')
+                     ) / 2
         return total_loss, logits_per_image, logits_per_text
+
 
 class CLIPVisionClassification(nn.Module):
 
@@ -125,15 +126,15 @@ class CLIPVisionMasked(nn.Module):
         encoder_outputs = self.vision_model.encoder(inputs_embeds=embeddings)
         last_hidden_state = encoder_outputs[0]
         outputs = last_hidden_state[:, 1:, :]
-        img_emb = self.vision_model.post_layernorm(outputs) #[64, 196, 768]
+        img_emb = self.vision_model.post_layernorm(outputs)  # [64, 196, 768]
         pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.vision_model.post_layernorm(pooled_output)
 
         B, L, C = img_emb.shape
         H = W = int(L ** 0.5)
-        img_emb = img_emb.permute(0, 2, 1).reshape(B, C, H, W) #[64, 768, 14, 14]
+        img_emb = img_emb.permute(0, 2, 1).reshape(B, C, H, W)  # [64, 768, 14, 14]
 
-        return img_emb,pooled_output
+        return img_emb, pooled_output
 
 
 class CLIPWeightedLOSS(nn.Module):
@@ -157,14 +158,12 @@ class CLIPWeightedLOSS(nn.Module):
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.mask_generator = MaskGenerator(input_size=224, mask_patch_size=32,
-                                   model_patch_size=16, mask_ratio=0.6)
-        
+                                            model_patch_size=16, mask_ratio=0.6)
 
-    def forward(self, input_ids,pixel_values,attention_mask):
-        
+    def forward(self, input_ids, pixel_values, attention_mask):
         mask = [self.mask_generator() for a in range(input_ids.shape[0])]
         mask = torch.tensor(np.array(mask)).to(input_ids.device)
-        
+
         z, pooled_output = self.encoder(pixel_values, mask)
         x_rec = self.decoder(z)
         vision_outputs = self.visual_projection(pooled_output)
@@ -174,19 +173,17 @@ class CLIPWeightedLOSS(nn.Module):
         text_input['attention_mask'] = attention_mask
         text_outputs = self.cliptext(**text_input)
 
-
-
         image_embeds = vision_outputs / vision_outputs.norm(p=2, dim=-1, keepdim=True)
         text_embeds = text_outputs.text_embeds / text_outputs.text_embeds.norm(p=2, dim=-1, keepdim=True)
 
         loss, logits_per_image, logits_per_text = self.criterion(image_embeds, text_embeds, self.logit_scale.exp())
-        
+
         output = CLIPOutput(
-            x_rec = x_rec,
+            x_rec=x_rec,
             loss=loss,
             text_embeds=text_embeds,
             image_embeds=image_embeds,
-            mask = mask
+            mask=mask
         )
 
         return output

@@ -1,23 +1,23 @@
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel,CLIPTextModelWithProjection
+from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, CLIPTextModelWithProjection
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
 
-
+from mask_generator import MaskGenerator
 
 configs = {
-        "adapter": AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu"),
-        "prefix": PrefixTuningConfig(flat=False, prefix_length=30),
-        "LoRA": LoRAConfig(r=8, alpha=16),
-        "IA3": IA3Config(),
-        "mam": MAMConfig(),
-        "unipelt": UniPELTConfig()
-    }
+    "adapter": AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu"),
+    "prefix": PrefixTuningConfig(flat=False, prefix_length=30),
+    "LoRA": LoRAConfig(r=8, alpha=16),
+    "IA3": IA3Config(),
+    "mam": MAMConfig(),
+    "unipelt": UniPELTConfig()
+}
 
 
 class CLIPOutput:
@@ -30,9 +30,9 @@ class CLIPOutput:
         # self.mask = mask
         self.output = {
             # 'x_rec': x_rec, 
-            'loss_recon' : loss_recon,
-            'clip_loss' : clip_loss,
-            'loss' : loss,
+            'loss_recon': loss_recon,
+            'clip_loss': clip_loss,
+            'loss': loss,
             'text_embeds': text_embeds,
             'image_embeds': image_embeds,
             'mask': mask
@@ -82,9 +82,9 @@ class ClipLoss(nn.Module):
             labels = self.labels[device]
 
         total_loss = (
-            F.cross_entropy(logits_per_image, labels, reduction='none') +
-            F.cross_entropy(logits_per_text, labels, reduction='none')
-            ) / 2
+                             F.cross_entropy(logits_per_image, labels, reduction='none') +
+                             F.cross_entropy(logits_per_text, labels, reduction='none')
+                     ) / 2
         return total_loss, logits_per_image, logits_per_text
 
 
@@ -147,22 +147,22 @@ class CLIPVisionMasked(nn.Module):
         encoder_outputs = self.vision_model.encoder(inputs_embeds=embeddings)
         last_hidden_state = encoder_outputs[0]
         outputs = last_hidden_state[:, 1:, :]
-        img_emb = self.vision_model.post_layernorm(outputs) #[64, 196, 768]
+        img_emb = self.vision_model.post_layernorm(outputs)  # [64, 196, 768]
         pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.vision_model.post_layernorm(pooled_output)
 
         B, L, C = img_emb.shape
         H = W = int(L ** 0.5)
-        img_emb = img_emb.permute(0, 2, 1).reshape(B, C, H, W) #[64, 768, 14, 14]
+        img_emb = img_emb.permute(0, 2, 1).reshape(B, C, H, W)  # [64, 768, 14, 14]
 
-        return img_emb,pooled_output
+        return img_emb, pooled_output
 
 
 class CLIPWeightedLOSS(nn.Module):
     def __init__(self, encoder, encoder_stride, weight):
         super().__init__()
-        self.weight = weight # cliploss weight
-        self.encoder = encoder # CLIPVisionMasked
+        self.weight = weight  # cliploss weight
+        self.encoder = encoder  # CLIPVisionMasked
         self.encoder_stride = encoder_stride
         self.decoder = nn.Sequential(
             nn.Conv2d(
@@ -191,20 +191,18 @@ class CLIPWeightedLOSS(nn.Module):
         self.cliptext.train_adapter(text_configname)
         self.cliptext.set_active_adapters(text_configname)
 
-
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.mask_generator = MaskGenerator(input_size=224, mask_patch_size=32,
-                                   model_patch_size=16, mask_ratio=0.6)
-        
+                                            model_patch_size=16, mask_ratio=0.6)
 
     def forward(self, input_ids, pixel_values, attention_mask):
         # device = "cuda" if torch.cuda.is_available() else "cpu"
         mask = [self.mask_generator() for a in range(pixel_values.shape[0])]
-        
+
         mask = torch.tensor(np.array(mask)).to(pixel_values.device)
         # print('pixel:', pixel_values.device, 'mask', mask.device)
-        
+
         z, pooled_output = self.encoder(pixel_values, mask)
         x_rec = self.decoder(z)
         vision_outputs = self.visual_projection(pooled_output)
@@ -226,15 +224,15 @@ class CLIPWeightedLOSS(nn.Module):
         loss_recon = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
 
         loss = clip_loss * self.weight + loss_recon * (1 - self.weight)
-        
+
         output = CLIPOutput(
             # x_rec = x_rec,
-            loss_recon = loss_recon, # reconstruct loss
-            clip_loss = clip_loss, # clip loss
-            loss=loss, 
+            loss_recon=loss_recon,  # reconstruct loss
+            clip_loss=clip_loss,  # clip loss
+            loss=loss,
             text_embeds=text_embeds,
             image_embeds=image_embeds,
-            mask = mask
+            mask=mask
         ).output
 
         return output
