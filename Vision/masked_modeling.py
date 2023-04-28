@@ -86,7 +86,6 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         loss_meter = AverageMeter()
 
         # Train model
-        optimizer.zero_grad()
         model.train()
         with tqdm(trainset, desc='train_epoch{}_adapter_{}'.format(epoch, configname)) as loop:
             for idx, (img, mask) in enumerate(loop):
@@ -98,6 +97,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
                 loss_recon = F.l1_loss(img, img_rec, reduction='none')
                 loss = (loss_recon * mask).sum() / (mask.sum() + 1e-5) / 3
 
+                optimizer.zero_grad()
                 if loss != 0:
                     loss.backward()
 
