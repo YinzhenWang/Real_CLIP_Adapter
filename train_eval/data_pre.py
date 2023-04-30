@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections import defaultdict, deque
+import numpy as np
 
 import torch
 import torch.distributed as dist
@@ -432,7 +433,7 @@ def evaluate(data_loader, model, device, handler):
 
     for data in metric_logger.log_every(data_loader, 10, header):
         for tensor_key in data.keys():
-            data[tensor_key] = torch.tensor(data[tensor_key]).to(device, non_blocking=True)
+            data[tensor_key] = torch.tensor(np.array(data[tensor_key])).to(device, non_blocking=True)
         handler.eval_batch(model=model, **data)
 
     metric_logger.synchronize_between_processes()

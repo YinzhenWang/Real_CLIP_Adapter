@@ -6,14 +6,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import CLIPTokenizerFast, CLIPImageProcessor
-
+from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
+from timm.utils import AverageMeter
 
 import data_pre
-from cross_model import CLIPALL
-from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig, IA3Config, MAMConfig, UniPELTConfig
-
+from cross_model import CLIPALL, CLIPAll_SimpleCrossAttn
 
 import logging
+
 
 def create_logger(filename, add_stream=False):
     logger = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ def create_logger(filename, add_stream=False):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
 
 configs = {
     "adapter": AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu"),
@@ -34,14 +35,9 @@ configs = {
 }
 
 
-
-
-
-
-
 def finetune(data_train_loader, data_test_loader, model, epochs, optimizer, criterion, output_dir, device):
     for _ in range(epochs):
-
+        finetuneloss_meter = AverageMeter()
         model.train()
         with tqdm(data_train_loader, desc='train {}'.format(_)) as loop:
             for x in loop:
@@ -53,8 +49,6 @@ def finetune(data_train_loader, data_test_loader, model, epochs, optimizer, crit
                 inputs["input_ids"] = x['input_ids']
                 inputs["attention_mask"] = (1 - x['attention_mask'])
                 outputs = model(**inputs)
-                vision_cls = outputs.image_embeds
-                language_cls = outputs.text_embeds
                 loss = outputs.loss
 
                 optimizer.zero_grad()
@@ -62,8 +56,9 @@ def finetune(data_train_loader, data_test_loader, model, epochs, optimizer, crit
                     loss.backward()
                 optimizer.step()
 
-                loop.set_postfix(loss=loss.item())
-        logger.info('train_epoch{}_loss_{}'.format(_, loss.item()))
+                finetuneloss_meter.update(loss.item(), inputs["pixel_values"].size(0))
+                loop.set_postfix(loss=finetuneloss_meter.avg)
+        logger.info('train_epoch{}_loss_{}'.format(_, finetuneloss_meter.avg))
 
         ext_test_stats, task_key = data_pre.evaluate(data_test_loader, model, device, data_pre.RetrievalHandler())
         torch.save(model.state_dict(), output_dir + '/ckpt.pth')
@@ -71,14 +66,12 @@ def finetune(data_train_loader, data_test_loader, model, epochs, optimizer, crit
 
 if __name__ == "__main__":
     exp = "cross"
-    output_dir = "./"+exp
+    output_dir = "./" + exp
     text_checkpoint_dir = "./mlm_ckpt"
     vision_checkpoint_dir = "./mim_ckpt"
     vision_configname = "LoRA"
     text_configname = "LoRA"
-    epochs = 50
-
-
+    epochs = 10
 
     timestamp = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())
     os.makedirs(output_dir, exist_ok=True)
@@ -92,7 +85,8 @@ if __name__ == "__main__":
     backbone = "openai/clip-vit-base-patch16"
     transform = CLIPImageProcessor.from_pretrained(backbone)
     tokenizer = CLIPTokenizerFast.from_pretrained(backbone)
-    model = CLIPALL(backbone)
+    # model = CLIPALL(backbone)
+    model = CLIPAll_SimpleCrossAttn(backbone)
 
     # Configs for Dataloader
     opt_kwargs = {}
@@ -100,9 +94,9 @@ if __name__ == "__main__":
     args['batch_size'] = 64
     args['num_workers'] = 8
     data_loader_train = data_pre.get_train_dataset(transform, tokenizer, args['batch_size'], args['num_workers'],
-                                          opt_kwargs)
+                                                   opt_kwargs)
     data_loader_test = data_pre.get_test_dataset(transform, tokenizer, args['batch_size'], args['num_workers'],
-                                          opt_kwargs)
+                                                 opt_kwargs)
 
     # Load adapter in vision and text model
     model.clipvision.load_adapter(vision_checkpoint_dir)
@@ -110,7 +104,6 @@ if __name__ == "__main__":
 
     model.cliptext.load_adapter(text_checkpoint_dir)
     model.cliptext.set_active_adapters("mam")
-    
 
     criterion = model.criterion
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5)
@@ -118,8 +111,8 @@ if __name__ == "__main__":
     model.to(device)
 
     for name, param in model.named_parameters():
-      if "cliptext" in name or "clipvision" in name:
-        param.requires_grad = False
-      print(name, param.requires_grad)
+        if "cliptext" in name or "clipvision" in name:
+            param.requires_grad = False
+        print(name, param.requires_grad)
 
     finetune(data_loader_train, data_loader_test, model, epochs, optimizer, criterion, output_dir, device)
