@@ -1,14 +1,16 @@
+import math
+
+import numpy as np
 import torch
-import torch.utils.checkpoint
-from torch import nn
-from transformers import AutoProcessor, CLIPModel, CLIPTextModel, CLIPVisionModel, CLIPTextModelWithProjection, \
-    CLIPVisionModelWithProjection
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from timm.models.layers import trunc_normal_ as __call_trunc_normal_
+import torch.utils.checkpoint
 from segment_anything.modeling import TwoWayTransformer
+from timm.models.layers import trunc_normal_ as __call_trunc_normal_
+from transformers import CLIPTextModelWithProjection, \
+    CLIPVisionModelWithProjection
+from torch import Tensor
 
 
 class CLIPOutput:
@@ -186,36 +188,100 @@ class CLIPALL(nn.Module):
         return output
 
 
+class Attention(nn.Module):
+    """
+    An attention layer that allows for downscaling the size of the embedding
+    after projection to queries, keys, and values.
+    Borrow from SAM.
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        downsample_rate: int = 1,
+    ) -> None:
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.internal_dim = embedding_dim // downsample_rate
+        self.num_heads = num_heads
+        assert self.internal_dim % num_heads == 0, "num_heads must divide embedding_dim."
+
+        self.q_proj = nn.Linear(embedding_dim, self.internal_dim)
+        self.k_proj = nn.Linear(embedding_dim, self.internal_dim)
+        self.v_proj = nn.Linear(embedding_dim, self.internal_dim)
+        self.out_proj = nn.Linear(self.internal_dim, embedding_dim)
+
+    def _separate_heads(self, x: Tensor, num_heads: int) -> Tensor:
+        b, n, c = x.shape
+        x = x.reshape(b, n, num_heads, c // num_heads)
+        return x.transpose(1, 2)  # B x N_heads x N_tokens x C_per_head
+
+    def _recombine_heads(self, x: Tensor) -> Tensor:
+        b, n_heads, n_tokens, c_per_head = x.shape
+        x = x.transpose(1, 2)
+        return x.reshape(b, n_tokens, n_heads * c_per_head)  # B x N_tokens x C
+
+    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
+        # Input projections
+        q = self.q_proj(q)
+        k = self.k_proj(k)
+        v = self.v_proj(v)
+
+        # Separate into heads
+        q = self._separate_heads(q, self.num_heads)
+        k = self._separate_heads(k, self.num_heads)
+        v = self._separate_heads(v, self.num_heads)
+
+        # Attention
+        _, _, _, c_per_head = q.shape
+        attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_tokens x N_tokens
+        attn = attn / math.sqrt(c_per_head)
+        attn = torch.softmax(attn, dim=-1)
+
+        # Get output
+        out = attn @ v
+        out = self._recombine_heads(out)
+        out = self.out_proj(out)
+
+        return out
+
+
 class CrossAttentionDecoderLayer(nn.Module):
-    def __init__(self, hidden_size, num_heads, dropout_prob=0.1):
+    def __init__(self, hidden_size, num_heads):
         super(CrossAttentionDecoderLayer, self).__init__()
-        self.self_attn = nn.MultiheadAttention(hidden_size, num_heads, dropout_prob)
-        self.cross_attn = nn.MultiheadAttention(hidden_size, num_heads, dropout_prob)
+        self.self_attn = Attention(hidden_size, num_heads)
+        self.cross_attn = Attention(hidden_size, num_heads)
+        self.text_attn = nn.MultiheadAttention
         self.feed_forward = nn.Sequential(
             nn.Linear(hidden_size, 4 * hidden_size),
             nn.ReLU(),
             nn.Linear(4 * hidden_size, hidden_size),
-            nn.Dropout(dropout_prob)
         )
         self.norm1 = nn.LayerNorm(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
         self.norm3 = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout_prob)
 
-    def forward(self, x, encoder_output, mask=None):
-        x_norm = self.norm1(x)
-        self_attn_output, _ = self.self_attn(x_norm, x_norm, x_norm, attn_mask=mask)
-        self_attn_output = self.dropout(self_attn_output) + x
-        self_attn_norm_output = self.norm2(self_attn_output)
+    def forward(self, queries, keys, query_pe, key_pe):
+        # Self attention
+        q = queries + query_pe
+        self_attn_out = self.self_attn(q, q, queries)
+        self_attn_out = queries + self_attn_out
+        self_attn_out_norm = self.norm1(self_attn_out)
 
-        cross_attn_output, _ = self.cross_attn(self_attn_norm_output, encoder_output, encoder_output)
-        cross_attn_output = self.dropout(cross_attn_output) + self_attn_output
-        cross_attn_norm_output = self.norm3(cross_attn_output)
+        # Cross attention
+        q = self_attn_out_norm + query_pe
+        k = keys + key_pe
+        cross_attn_out = self.cross_attn(q, k, keys)
+        cross_attn_out = queries + cross_attn_out
+        cross_attn_out_norm = self.norm2(cross_attn_out)
 
-        ff_output = self.feed_forward(cross_attn_norm_output)
-        ff_output = self.dropout(ff_output) + cross_attn_norm_output
+        # MLP
+        mlp_output = self.feed_forward(cross_attn_out_norm)
+        mlp_output = mlp_output + cross_attn_out_norm
+        mlp_output_norm = self.norm3(mlp_output)
 
-        return ff_output
+        return mlp_output_norm
 
 
 class CLIPAll_SimpleCrossAttn(nn.Module):
@@ -226,16 +292,17 @@ class CLIPAll_SimpleCrossAttn(nn.Module):
         self.clipvision = CLIPVisionModelWithProjection.from_pretrained(self.backbone)
         embed_dim = 512
 
-        self.mlp_vision = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.mlp_text = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.image_cross_transformer = CrossAttentionDecoderLayer(
-            hidden_size=embed_dim,
-            num_heads=8
-        )
-        self.text_cross_transformer = CrossAttentionDecoderLayer(
-            hidden_size=embed_dim,
-            num_heads=8
-        )
+        self.mlp_vision = nn.Linear(self.clipvision.vision_model.config.hidden_size, embed_dim, bias=False)
+        self.mlp_text = nn.Linear(self.cliptext.text_model.config.hidden_size, embed_dim, bias=False)
+
+        self.register_buffer("image_position_ids", torch.arange(197).expand((1, -1)))
+        self.image_position_embedding = nn.Embedding(197, embed_dim)
+
+        self.register_buffer("text_position_ids", torch.arange(77).expand((1, -1)))
+        self.text_position_embedding = nn.Embedding(77, embed_dim)
+
+        self.image_cross_transformer = CrossAttentionDecoderLayer(hidden_size=embed_dim, num_heads=8)
+        self.text_cross_transformer = CrossAttentionDecoderLayer(hidden_size=embed_dim, num_heads=8)
 
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
@@ -250,15 +317,32 @@ class CLIPAll_SimpleCrossAttn(nn.Module):
         vision_input['pixel_values'] = pixel_values
         vision_outputs = self.clipvision(**vision_input)
 
-        text_embeds = text_outputs.text_embeds
-        image_embeds = vision_outputs.image_embeds
+        image_hidden_state = vision_outputs.last_hidden_state
+        image_hidden_state = self.mlp_vision(image_hidden_state)
 
-        image_embeds_cross = self.image_cross_transformer(text_embeds, image_embeds)
-        text_embeds_cross = self.text_cross_transformer(image_embeds, text_embeds)
+        image_pe = self.image_position_embedding(self.image_position_ids)
+        image_pe = torch.repeat_interleave(image_pe, image_hidden_state.shape[0], dim=0)
+        image_pe = image_pe[:, :image_hidden_state.size(1), :]
+
+        text_hidden_state = text_outputs.last_hidden_state
+        text_hidden_state = self.mlp_text(text_hidden_state)
+
+        text_pe = self.text_position_embedding(self.text_position_ids)
+        text_pe = torch.repeat_interleave(text_pe, text_hidden_state.shape[0], dim=0)
+        text_pe = text_pe[:, :text_hidden_state.size(1), :]
+
+        image_hidden_state_cross = self.image_cross_transformer(image_hidden_state, text_hidden_state, image_pe, text_pe)
+        text_hidden_state_cross = self.text_cross_transformer(text_hidden_state, image_hidden_state, text_pe, image_pe)
+
+        image_embeds = image_hidden_state_cross[:, 0, :]
+        text_embeds = text_hidden_state_cross[
+            torch.arange(text_hidden_state_cross.shape[0], device=text_hidden_state_cross.device),
+            input_ids.to(dtype=torch.int, device=text_hidden_state_cross.device).argmax(dim=-1),
+        ]
 
         # Normalization
-        image_embeds = image_embeds_cross / image_embeds_cross.norm(p=2, dim=-1, keepdim=True)
-        text_embeds = text_embeds_cross / text_embeds_cross.norm(p=2, dim=-1, keepdim=True)
+        image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
+        text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
 
         loss, logits_per_image, logits_per_text = self.criterion(image_embeds, text_embeds, self.logit_scale.exp())
 
