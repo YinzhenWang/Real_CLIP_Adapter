@@ -14,10 +14,12 @@ from torch import Tensor
 
 
 class CLIPOutput:
-    def __init__(self, loss, text_embeds, image_embeds):
+    def __init__(self, loss, text_embeds, image_embeds, logits_per_image=None, logits_per_text=None):
         self.loss = loss
         self.text_embeds = text_embeds
         self.image_embeds = image_embeds
+        self.logits_per_image = logits_per_image
+        self.logits_per_text = logits_per_text
 
 
 def trunc_normal_(tensor, mean=0., std=1.):
@@ -149,26 +151,61 @@ class CLIPALL(nn.Module):
         vision_input['pixel_values'] = pixel_values
         vision_outputs = self.clipvision(**vision_input)
 
-        text_tokens = text_outputs.last_hidden_state
-        text_tokens = self.mlp_text(text_tokens)
+        text_embeds = text_outputs.last_hidden_state
+        text_feat = self.mlp_text(text_embeds)
 
-        src = vision_outputs.last_hidden_state
-        src = self.mlp_vision(src)
-        src = src.permute(0, 2, 1)
+        image_embeds = vision_outputs.last_hidden_state
+        image_feat = self.mlp_vision(image_embeds)
+
+        # Calculate contrastive loss
+        image_feat = image_feat[:, 0, :]
+        text_feat = text_feat[
+            torch.arange(text_feat.shape[0], device=text_feat.device),
+            input_ids.to(dtype=torch.int, device=text_feat.device).argmax(dim=-1),
+        ]
+        image_feat = image_feat / image_feat.norm(p=2, dim=-1, keepdim=True)
+        text_feat = text_feat / text_feat.norm(p=2, dim=-1, keepdim=True)
+
+        loss_itc, logits_per_image, logits_per_text = self.criterion(image_feat, text_feat, self.logit_scale.exp())
+        score = image_feat @ text_feat
+
+        # Cross attention fusion
+        src = image_feat.permute(0, 2, 1)
         b, c, hw = src.shape
         src = torch.reshape(src, (b, c, hw, 1))
 
         image_pe = self.position_embedding(self.position_ids)
-        pos_src = torch.repeat_interleave(image_pe, text_tokens.shape[0], dim=0)
+        pos_src = torch.repeat_interleave(image_pe, text_feat.shape[0], dim=0)
         pos_src = pos_src.permute(0, 2, 1)
         pos_src = torch.reshape(pos_src, (b, c, hw, 1))
 
-        # print(src.shape)
-        # print(pos_src.shape)
-        # print(text_tokens.shape)
-        hs, src = self.cross_transformer(src, pos_src, text_tokens)
+        hs, src = self.cross_transformer(src, pos_src, text_feat)
         # print("hs ",hs.shape) #[bs, 64, 256]
         # print("src ",src.shape) #[bs, 197, 256]
+
+        output_pos = torch.mul(hs, src)
+
+        with torch.no_grad():
+            bs = image_feat.size(0)
+            weights_i2t = F.softmax(score + 1e-4, dim=1)
+            weights_t2i = F.softmax(score + 1e-4, dim=0)
+
+        # select a negative image for each text
+        image_embeds_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+            image_embeds_neg.append(image_embeds[neg_idx])
+        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+
+        # select a negative text for each image
+        text_embeds_neg = []
+        text_atts_neg = []
+        for b in range(bs):
+            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_embeds_neg.append(text_embeds[neg_idx])
+            text_atts_neg.append(text.attention_mask[neg_idx])
+        text_embeds_neg = torch.stack(text_embeds_neg, dim=0)
+        text_atts_neg = torch.stack(text_atts_neg, dim=0)
 
         image_embeds = src[:, 0, :]
         text_embeds = hs[
@@ -264,17 +301,23 @@ class CrossAttentionDecoderLayer(nn.Module):
 
     def forward(self, queries, keys, query_pe, key_pe):
         # Self attention
-        q = queries + query_pe
-        self_attn_out = self.self_attn(q, q, queries)
-        self_attn_out = queries + self_attn_out
+        # q = queries + query_pe
+        # self_attn_out = self.self_attn(q, q, queries)
+        # self_attn_out = queries + self_attn_out
+        # self_attn_out_norm = self.norm1(self_attn_out)
+        self_attn_out = self.self_attn(queries, queries, queries)
+        self_attn_out = self_attn_out + queries
         self_attn_out_norm = self.norm1(self_attn_out)
 
         # Cross attention
-        q = self_attn_out_norm + query_pe
-        k = keys + key_pe
-        cross_attn_out = self.cross_attn(q, k, keys)
-        cross_attn_out = queries + cross_attn_out
-        cross_attn_out_norm = self.norm2(cross_attn_out)
+        # q = self_attn_out_norm + query_pe
+        # k = keys + key_pe
+        # cross_attn_out = self.cross_attn(q, k, keys)
+        # cross_attn_out = queries + cross_attn_out
+        # cross_attn_out_norm = self.norm2(cross_attn_out)
+        cross_attn_output = self.cross_attn(self_attn_out_norm, keys, keys)
+        cross_attn_output = cross_attn_output + self_attn_out_norm
+        cross_attn_out_norm = self.norm3(cross_attn_output)
 
         # MLP
         mlp_output = self.feed_forward(cross_attn_out_norm)
@@ -349,6 +392,8 @@ class CLIPAll_SimpleCrossAttn(nn.Module):
         output = CLIPOutput(
             loss=loss,
             text_embeds=text_embeds,
-            image_embeds=image_embeds
+            image_embeds=image_embeds,
+            logits_per_image=logits_per_image,
+            logits_per_text=logits_per_text
         )
         return output
