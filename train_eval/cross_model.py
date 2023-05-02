@@ -8,8 +8,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from segment_anything.modeling import TwoWayTransformer
 from timm.models.layers import trunc_normal_ as __call_trunc_normal_
-from transformers import CLIPTextModelWithProjection, \
-    CLIPVisionModelWithProjection
+from transformers import CLIPTextModelWithProjection, CLIPVisionModelWithProjection, CLIPVisionModel, CLIPTextModel
 from torch import Tensor
 
 
@@ -301,23 +300,17 @@ class CrossAttentionDecoderLayer(nn.Module):
 
     def forward(self, queries, keys, query_pe, key_pe):
         # Self attention
-        # q = queries + query_pe
-        # self_attn_out = self.self_attn(q, q, queries)
-        # self_attn_out = queries + self_attn_out
-        # self_attn_out_norm = self.norm1(self_attn_out)
-        self_attn_out = self.self_attn(queries, queries, queries)
-        self_attn_out = self_attn_out + queries
+        q = queries + query_pe
+        self_attn_out = self.self_attn(q, q, queries)
+        self_attn_out = queries + self_attn_out
         self_attn_out_norm = self.norm1(self_attn_out)
 
         # Cross attention
-        # q = self_attn_out_norm + query_pe
-        # k = keys + key_pe
-        # cross_attn_out = self.cross_attn(q, k, keys)
-        # cross_attn_out = queries + cross_attn_out
-        # cross_attn_out_norm = self.norm2(cross_attn_out)
-        cross_attn_output = self.cross_attn(self_attn_out_norm, keys, keys)
-        cross_attn_output = cross_attn_output + self_attn_out_norm
-        cross_attn_out_norm = self.norm3(cross_attn_output)
+        q = self_attn_out_norm + query_pe
+        k = keys + key_pe
+        cross_attn_out = self.cross_attn(q, k, keys)
+        cross_attn_out = queries + cross_attn_out
+        cross_attn_out_norm = self.norm2(cross_attn_out)
 
         # MLP
         mlp_output = self.feed_forward(cross_attn_out_norm)
@@ -350,6 +343,8 @@ class CLIPAll_SimpleCrossAttn(nn.Module):
         self.criterion = ClipLoss()
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
+        self.itm_head = nn.Linear(embed_dim, 2)
+
     def forward(self, input_ids, pixel_values, attention_mask, image_id=None):
         text_input = {}
         text_input['input_ids'] = input_ids
@@ -360,40 +355,102 @@ class CLIPAll_SimpleCrossAttn(nn.Module):
         vision_input['pixel_values'] = pixel_values
         vision_outputs = self.clipvision(**vision_input)
 
-        image_hidden_state = vision_outputs.last_hidden_state
-        image_hidden_state = self.mlp_vision(image_hidden_state)
+        image_embeds = self.mlp_vision(vision_outputs.last_hidden_state)
+        image_feat = image_embeds[:, 0, :]
+        image_feat = F.normalize(image_feat, dim=-1)
 
+        text_embeds = self.mlp_text(text_outputs.last_hidden_state)
+        text_feat = text_embeds[
+            torch.arange(text_embeds.shape[0], device=text_embeds.device),
+            input_ids.to(dtype=torch.int, device=text_embeds.device).argmax(dim=-1),
+        ]
+        text_feat = F.normalize(text_feat, dim=-1)
+
+        # Calculate contrastive loss
+        loss_itc, logits_per_image, logits_per_text = self.criterion(image_feat, text_feat, self.logit_scale.exp())
+
+        # Cross modal fusion
         image_pe = self.image_position_embedding(self.image_position_ids)
-        image_pe = torch.repeat_interleave(image_pe, image_hidden_state.shape[0], dim=0)
-        image_pe = image_pe[:, :image_hidden_state.size(1), :]
-
-        text_hidden_state = text_outputs.last_hidden_state
-        text_hidden_state = self.mlp_text(text_hidden_state)
+        image_pe = torch.repeat_interleave(image_pe, image_embeds.shape[0], dim=0)
+        image_pe = image_pe[:, :image_embeds.size(1), :]
 
         text_pe = self.text_position_embedding(self.text_position_ids)
-        text_pe = torch.repeat_interleave(text_pe, text_hidden_state.shape[0], dim=0)
-        text_pe = text_pe[:, :text_hidden_state.size(1), :]
+        text_pe = torch.repeat_interleave(text_pe, text_embeds.shape[0], dim=0)
+        text_pe = text_pe[:, :text_embeds.size(1), :]
 
-        image_hidden_state_cross = self.image_cross_transformer(image_hidden_state, text_hidden_state, image_pe, text_pe)
-        text_hidden_state_cross = self.text_cross_transformer(text_hidden_state, image_hidden_state, text_pe, image_pe)
-
-        image_embeds = image_hidden_state_cross[:, 0, :]
-        text_embeds = text_hidden_state_cross[
-            torch.arange(text_hidden_state_cross.shape[0], device=text_hidden_state_cross.device),
-            input_ids.to(dtype=torch.int, device=text_hidden_state_cross.device).argmax(dim=-1),
+        image_embeds_pos = self.image_cross_transformer(image_embeds, text_embeds, image_pe, text_pe)
+        image_feat_pos = image_embeds_pos[:, 0, :]
+        text_embeds_pos = self.text_cross_transformer(text_embeds, image_embeds, text_pe, image_pe)
+        text_feat_pos = text_embeds_pos[
+            torch.arange(text_embeds_pos.shape[0], device=text_embeds_pos.device),
+            input_ids.to(dtype=torch.int, device=text_embeds_pos.device).argmax(dim=-1),
         ]
 
-        # Normalization
-        image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
-        text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
+        with torch.no_grad():
+            batch_size = image_feat.size(0)
+            weights_i2t = F.softmax(logits_per_image + 1e-4, dim=1)
+            weights_t2i = F.softmax(logits_per_text + 1e-4, dim=1)
 
-        loss, logits_per_image, logits_per_text = self.criterion(image_embeds, text_embeds, self.logit_scale.exp())
+        # Select a negative image for each text
+        image_embeds_neg = []
+        for b in range(batch_size):
+            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+            image_embeds_neg.append(image_embeds[neg_idx])
+        image_embeds_neg = torch.stack(image_embeds_neg, dim=0)
+
+        # Select a negative text for each image
+        text_embeds_neg = []
+        text_atts_neg = []
+        input_ids_neg = []
+        for b in range(batch_size):
+            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            text_embeds_neg.append(text_embeds[neg_idx])
+            text_atts_neg.append(attention_mask[neg_idx])
+            input_ids_neg.append(input_ids[neg_idx])
+        text_embeds_neg = torch.stack(text_embeds_neg, dim=0)
+        text_atts_neg = torch.stack(text_atts_neg, dim=0)
+        input_ids_neg = torch.stack(input_ids_neg, dim=0)
+
+        text_embeds_all = torch.cat([text_embeds, text_embeds_neg], dim=0)
+        text_atts_all = torch.cat([attention_mask, text_atts_neg], dim=0)
+        input_ids_all = torch.cat([input_ids, input_ids_neg], dim=0)
+
+        image_embeds_all = torch.cat([image_embeds_neg, image_embeds], dim=0)
+
+        image_pe = self.image_position_embedding(self.image_position_ids)
+        image_pe = torch.repeat_interleave(image_pe, image_embeds_all.shape[0], dim=0)
+        image_pe = image_pe[:, :image_embeds_all.size(1), :]
+
+        text_pe = self.text_position_embedding(self.text_position_ids)
+        text_pe = torch.repeat_interleave(text_pe, text_embeds_all.shape[0], dim=0)
+        text_pe = text_pe[:, :text_embeds_all.size(1), :]
+
+        image_embeds_neg = self.image_cross_transformer(image_embeds_all, text_embeds_all, image_pe, text_pe)
+        image_feat_neg = image_embeds_neg[:, 0, :]
+        text_embeds_neg = self.text_cross_transformer(text_embeds_all, image_embeds_all, text_pe, image_pe)
+        text_feat_neg = text_embeds_neg[
+            torch.arange(text_embeds_neg.shape[0], device=text_embeds_neg.device),
+            input_ids_all.to(dtype=torch.int, device=text_embeds_neg.device).argmax(dim=-1),
+        ]
+
+        vl_embeds_pos = torch.mul(image_feat_pos, text_feat_pos)
+        vl_embeds_neg = torch.mul(image_feat_neg, text_feat_neg)
+
+        vl_embeds = torch.cat([vl_embeds_pos, vl_embeds_neg], dim=0)
+        vl_output = self.itm_head(vl_embeds)
+
+        itm_labels = torch.cat([torch.ones(batch_size, dtype=torch.long), torch.zeros(2 * batch_size, dtype=torch.long)],
+                               dim=0).to(vl_output.device)
+        loss_itm = F.cross_entropy(vl_output, itm_labels)
+
+        loss = loss_itm + loss_itc
 
         output = CLIPOutput(
-            loss=loss,
-            text_embeds=text_embeds,
-            image_embeds=image_embeds,
-            logits_per_image=logits_per_image,
-            logits_per_text=logits_per_text
-        )
+                loss=loss,
+                text_embeds=text_feat,
+                image_embeds=image_feat,
+                logits_per_image=logits_per_image,
+                logits_per_text=logits_per_text
+            )
+
         return output
