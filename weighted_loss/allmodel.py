@@ -243,8 +243,11 @@ class CLIPWeightedLOSS(nn.Module):
         
 
 
-    def forward(self, input_ids, pixel_values, attention_mask, masked_ids):
+    def forward(self, input_ids, pixel_values, attention_mask, masked_ids=None):
         # device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if masked_ids == None:
+            masked_ids = input_ids.clone()
         mask = [self.mask_generator() for a in range(pixel_values.shape[0])]
 
         mask = torch.tensor(np.array(mask)).to(pixel_values.device)
@@ -253,7 +256,6 @@ class CLIPWeightedLOSS(nn.Module):
         z = self.encoder(pixel_values, mask)
         x_rec = self.decoder(z)
         # vision_outputs = self.visual_projection(pooled_output)
-
         text_input = {}
         text_input['input_ids'] = input_ids
         text_input['attention_mask'] = attention_mask
@@ -284,7 +286,7 @@ class CLIPWeightedLOSS(nn.Module):
         loss_mlm = self.mlmcriterion(mask_logits.view(-1, 49409), labels.view(-1))
 
 
-        loss = (clip_loss + loss_recon + loss_mlm)/3.0
+        loss = clip_loss  + loss_mlm
         
 
         output = CLIPOutput(

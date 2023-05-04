@@ -207,7 +207,7 @@ class RetrievalHandler(TaskHandler):
         self.image_ids.clear()
         self.metric_logger = metric_logger
 
-    def eval_batch(self, model, pixel_values, input_ids, attention_mask, image_id):
+    def eval_batch(self, model, pixel_values, input_ids, attention_mask, image_id,masked_ids=None):
 
         inputs = {}
 
@@ -217,9 +217,8 @@ class RetrievalHandler(TaskHandler):
 
         # print(inputs)
         outputs = model(**inputs)
-
-        vision_cls = outputs.image_embeds
-        language_cls = outputs.text_embeds
+        vision_cls = outputs['image_embeds']
+        language_cls = outputs['text_embeds']
 
         self.image_feats.append(vision_cls.clone())
         self.text_feats.append(language_cls.clone())
@@ -440,7 +439,7 @@ def evaluate(data_loader, model, device, handler):
     # switch to evaluation mode
     metric_logger = MetricLogger(delimiter="  ")
     header = 'Test:'
-
+    model.to(device)
     model.eval()
 
     handler.before_eval(metric_logger=metric_logger, data_loader=data_loader)

@@ -19,7 +19,7 @@ from transformers.adapters import AdapterConfig, PrefixTuningConfig, LoRAConfig,
 import os
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "6,5,4,3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 
 configs = {
     "adapter": AdapterConfig(mh_adapter=True, output_adapter=True, reduction_factor=16, non_linearity="relu"),
@@ -110,13 +110,13 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
         cycle_limit=1,
         t_in_epochs=False,
     )
-    for name, param in model.named_parameters():
-        # param.requires_grad = False
-        # if 'LoRA' in name or "mam" in name:
-        #     param.requires_grad = True
-        if "mask_token" in name:# or 'logit_scale' in name:
-            param.requires_grad = False
-        print(name, param.requires_grad)
+    # for name, param in model.named_parameters():
+    #     # param.requires_grad = False
+    #     # if 'LoRA' in name or "mam" in name:
+    #     #     param.requires_grad = True
+    #     if "mask_token" in name:# or 'logit_scale' in name:
+    #         param.requires_grad = False
+    #     print(name, param.requires_grad)
 
     logger.info("Start training")
 
@@ -223,7 +223,7 @@ def masked_modeling(data_path, configname, config, epochs, warmup_epochs, mask_p
 
 
 if __name__ == "__main__":
-    # adapter config
+    # t config
     config_name = "LoRA"
     config = configs[config_name]
 
@@ -241,8 +241,7 @@ if __name__ == "__main__":
     mask_patch_size = 32
     model_patch_size = 16
     mask_ratio = 0.6
-    batch_size = 64
+    batch_size = 32
     weight = 0.5
-
     masked_modeling(data_path, config_name, config, train_epochs, warmup_epochs,
                     mask_patch_size, model_patch_size, mask_ratio, output_dir, weight, batch_size, check_grad=False)
